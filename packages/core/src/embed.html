@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #fff; }
+    #container { width: 100%; height: 100%; }
+    #container iframe { border: 0; }
+  </style>
+  <script src="./powerbi.min.js"></script>
+</head>
+<body>
+  <div id="container"></div>
+  <script>
+    // Control surface used by the Playwright driver (page.evaluate) and the
+    // VS Code webview (postMessage). All state changes go through __pbi so
+    // callers can await a fresh `rendered` event before screenshotting.
+    (function () {
+      var models = window["powerbi-client"].models;
+      var report = null;
+      var renderSeq = 0;
+
+      window.__state = { rendered: false, error: null, renderSeq: 0 };
+
+      function armRenderWait() {
+        window.__state.rendered = false;
+        renderSeq++;
+      }
+
+      function attachEvents(r) {
+        r.off("rendered");
+        r.on("rendered", function () {
+          window.__state.rendered = true;
+          window.__state.renderSeq = renderSeq;
+        });
+        r.off("error");
+        r.on("error", function (e) {
+          window.__state.error = JSON.stringify(e && e.detail ? e.detail : e);
+        });
+      }
+
+      window.__pbi = {
+        init: function (config) {
+          armRenderWait();
+          var embedConfig = {
+            type: "report",
+            id: config.reportId,
+            embedUrl: config.embedUrl,
+            accessToken: config.accessToken,
+            tokenType: models.TokenType.Aad,
+            permissions: models.Permissions.Read,
+            settings: {
+              panes: {
+                filters: { visible: false },
+                pageNavigation: { visible: config.showNav !== false },
+              },
+              background: models.BackgroundType.Default,
+            },
+          };
+          if (config.pageName) embedConfig.pageName = config.pageName;
+          var container = document.getElementById("container");
+          window.powerbi.reset(container);
+          report = window.powerbi.embed(container, embedConfig);
+          attachEvents(report);
+          return true;
+        },
+
+        setAccessToken: function (token) {
+          return report.setAccessToken(token);
+        },
+
+        getPages: function () {
+          return report.getPages().then(function (pages) {
+            return pages.map(function (p) {
+              return {
+                name: p.name,
+                displayName: p.displayName,
+                isActive: p.isActive,
+                defaultSize: p.defaultSize,
+              };
+            });
+          });
+        },
+
+        setPage: function (pageName) {
+          armRenderWait();
+          return report.setPage(pageName);
+        },
+
+        getVisuals: function () {
+          return report.getActivePage().then(function (page) {
+            return page.getVisuals().then(function (visuals) {
+              return visuals.map(function (v) {
+                return { name: v.name, title: v.title, type: v.type, layout: v.layout };
+              });
+            });
+          });
+        },
+
+        // filters: array of powerbi filter objects (IBasicFilter/IAdvancedFilter...)
+        setFilters: function (filters) {
+          armRenderWait();
+          return report.updateFilters(models.FiltersOperations.ReplaceAll, filters);
+        },
+
+        clearFilters: function () {
+          armRenderWait();
+          return report.updateFilters(models.FiltersOperations.RemoveAll);
+        },
+
+        // slicer state on a visual of the active page; state = { filters: [...] }
+        setSlicer: function (visualName, state) {
+          return report.getActivePage().then(function (page) {
+            return page.getVisuals().then(function (visuals) {
+              var target = visuals.find(function (v) { return v.name === visualName; });
+              if (!target) throw new Error("Slicer visual not found: " + visualName);
+              armRenderWait();
+              return target.setSlicerState(state);
+            });
+          });
+        },
+
+        // Geometry needed to crop a single visual out of the page screenshot.
+        getActivePageSize: function () {
+          return report.getActivePage().then(function (page) {
+            return page.defaultSize;
+          });
+        },
+      };
+
+      // VS Code webview integration (no-op under Playwright).
+      if (typeof acquireVsCodeApi === "function") {
+        var vscode = acquireVsCodeApi();
+        window.addEventListener("message", function (event) {
+          var msg = event.data || {};
+          if (msg.type === "init") {
+            window.__pbi.init(msg.config);
+          } else if (msg.type === "setPage") {
+            window.__pbi.setPage(msg.pageName);
+          } else if (msg.type === "setAccessToken") {
+            window.__pbi.setAccessToken(msg.accessToken);
+          } else if (msg.type === "getPages") {
+            window.__pbi.getPages().then(function (pages) {
+              vscode.postMessage({ type: "pages", pages: pages });
+            });
+          }
+        });
+        vscode.postMessage({ type: "ready" });
+      }
+    })();
+  </script>
+</body>
+</html>

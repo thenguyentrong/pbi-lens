@@ -1,0 +1,17 @@
+{
+  "name": "pbi-lens-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "packages/core",
+    "packages/cli",
+    "packages/vscode"
+  ],
+  "scripts": {
+    "build": "npm run build -w @pbi-lens/core && npm run build -w pbi-lens && npm run build -w pbi-lens-vscode",
+    "watch": "npm run build && npm run watch -w @pbi-lens/core"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

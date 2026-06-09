@@ -1,0 +1,26 @@
+{
+  "name": "@pbi-lens/core",
+  "version": "0.1.0",
+  "description": "Power BI auth, REST, embed host and Playwright capture engine",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "media"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.js",
+    "watch": "tsc -p tsconfig.json --watch"
+  },
+  "dependencies": {
+    "@azure/msal-node": "^2.16.0",
+    "express": "^4.21.0",
+    "playwright": "^1.50.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.0.0",
+    "powerbi-client": "^2.23.1",
+    "typescript": "^5.6.0"
+  }
+}
