@@ -22,6 +22,7 @@ Power BI Desktop can't be screenshotted reliably (WebView2 canvas) and the expor
 packages/core     auth (MSAL device code), Power BI REST, embed host, Playwright capture
 packages/cli      `pbi-lens` CLI — the agent-facing surface
 packages/vscode   VS Code extension — the human-facing viewer
+packages/mcp      MCP server — gives Claude / Copilot / Codex the report info on demand
 ```
 
 ## Install the extension (any PC)
@@ -63,7 +64,29 @@ pbi-lens shot -p "Overview" --filter '[{"$schema":"http://powerbi.com/product/sc
 
 pbi-lens dax "EVALUATE SUMMARIZECOLUMNS(Region[Name], \"Rev\", [Total Revenue])"
 pbi-lens publish dist/report.pbix -w "My Workspace"
+
+# Structured info (what an AI usually needs) — all support --json
+pbi-lens context -p "Overview"               # one-shot orientation: pages, visuals + field bindings, model, filters
+pbi-lens model                               # tables, columns, measures, relationships (DAX INFO.VIEW.*)
+pbi-lens fields -p "Overview"                # which column/measure is on which axis/role, per visual
+pbi-lens data --visual "Revenue by Month"    # a visual's data points as CSV
+pbi-lens filters -p "Overview"               # active filter + slicer state
 ```
+
+## Give your AI the plug (MCP)
+
+`packages/mcp` is an MCP server with 15 tools (`get_report_context`, `get_visual_fields`, `get_model`, `run_dax`, `get_visual_data`, `get_filters`, `screenshot_page`, `set_filters`, `publish_pbix`, ...). Screenshots come back as real images the AI can see. It works in every MCP-capable agent:
+
+- **Claude Code:** `claude mcp add --scope user pbi-lens -- node <repo>/packages/mcp/dist/index.js` (already registered on this machine; the repo also has a project-scope `.mcp.json`).
+- **GitHub Copilot Chat (VS Code):** `.vscode/mcp.json` in this repo, or user-wide in `%APPDATA%\Code\User\mcp.json` (already set up on this machine). Enable agent mode to see the tools.
+- **Codex CLI:** add to `~/.codex/config.toml`:
+  ```toml
+  [mcp_servers.pbi-lens]
+  command = "node"
+  args = ["C:\\pbi-lens\\packages\\mcp\\dist\\index.js"]
+  ```
+
+All tools default to the workspace/report saved via `pbi-lens use`, and the server keeps a warm browser session per report so consecutive calls are fast.
 
 ## VS Code extension
 
@@ -75,9 +98,9 @@ F5 in this repo launches the Extension Development Host. Commands:
 
 Settings `pbiLens.workspace` / `pbiLens.report` skip the pickers.
 
-## The Claude loop
+## The agent loop
 
-See [CLAUDE.md](./CLAUDE.md). Short version: Claude runs `pbi-lens shot`, Reads the PNG, analyzes, optionally edits the PBIP/PBIR report source, republishes, re-shoots, and verifies — no human eyes required.
+See [CLAUDE.md](./CLAUDE.md) (mirrored as [AGENTS.md](./AGENTS.md) for Codex). Short version: the agent calls `get_report_context` to orient, digs into specifics with `get_visual_fields` / `run_dax`, edits the PBIP/PBIR report source, republishes, re-screenshots, and verifies — no human eyes required.
 
 ## Local Desktop DAX (optional)
 

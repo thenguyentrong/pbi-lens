@@ -1,0 +1,22 @@
+{
+  "name": "@pbi-lens/mcp",
+  "version": "0.2.0",
+  "description": "MCP server exposing Power BI report info to AI agents (Claude, Copilot, Codex)",
+  "private": true,
+  "main": "dist/index.js",
+  "bin": {
+    "pbi-lens-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@pbi-lens/core": "0.2.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

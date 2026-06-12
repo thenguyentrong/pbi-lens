@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "pbi-lens": {
+      "command": "node",
+      "args": ["C:\\pbi-lens\\packages\\mcp\\dist\\index.js"]
+    }
+  }
+}
