@@ -4,6 +4,7 @@ import * as fs from "fs";
 import * as path from "path";
 import {
   login,
+  loginInteractive,
   logout,
   currentAccount,
   getAccessToken,
@@ -44,16 +45,19 @@ async function resolveTarget(client: PowerBiClient, opts: TargetOpts) {
 
 program
   .command("login")
-  .description("Sign in to Power BI (device code flow; token cached locally)")
+  .description("Sign in to Power BI (device code by default; --interactive for a browser flow when Conditional Access blocks device code)")
   .option("--client-id <id>", "Entra app client id (defaults to Azure CLI well-known id)")
   .option("--tenant <id>", "Entra tenant id (defaults to 'organizations')")
+  .option("-i, --interactive", "Open the system browser (auth-code flow) instead of device code")
   .action(async (opts) => {
     try {
       if (opts.clientId || opts.tenant) {
         const cfg = loadConfig();
         saveConfig({ ...cfg, clientId: opts.clientId ?? cfg.clientId, tenantId: opts.tenant ?? cfg.tenantId });
       }
-      const account = await login({}, (msg) => console.log(`\n${msg}\n`));
+      const account = opts.interactive
+        ? await loginInteractive({})
+        : await login({}, (msg) => console.log(`\n${msg}\n`));
       console.log(`Signed in as ${account.username}`);
     } catch (e) {
       fail(e);
