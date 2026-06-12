@@ -2,7 +2,7 @@
   "name": "pbi-lens-vscode",
   "displayName": "PBI Lens",
   "description": "View Power BI reports inside VS Code — and let your AI agent see them too",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "vinh",
   "private": true,
   "engines": {
@@ -48,7 +48,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@pbi-lens/core": "0.1.0"
+    "@pbi-lens/core": "0.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

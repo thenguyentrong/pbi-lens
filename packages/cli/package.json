@@ -1,6 +1,6 @@
 {
   "name": "pbi-lens",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "CLI to screenshot, query and publish Power BI reports — built for AI agent loops",
   "main": "dist/index.js",
   "bin": {
@@ -10,7 +10,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@pbi-lens/core": "0.1.0",
+    "@pbi-lens/core": "0.2.0",
     "commander": "^12.1.0"
   },
   "devDependencies": {

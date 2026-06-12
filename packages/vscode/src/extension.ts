@@ -119,9 +119,16 @@ async function cmdOpenReport(context: vscode.ExtensionContext): Promise<void> {
 
     const webview = panel.webview;
     const pbiJsUri = webview.asWebviewUri(vscode.Uri.file(path.join(coreMediaDir, "powerbi.min.js")));
+    const authoringJsUri = webview.asWebviewUri(
+      vscode.Uri.file(path.join(coreMediaDir, "powerbi-report-authoring.min.js"))
+    );
     let html = fs.readFileSync(path.join(coreMediaDir, "embed.html"), "utf8");
     html = html
       .replace('<script src="./powerbi.min.js"></script>', `<script src="${pbiJsUri}"></script>`)
+      .replace(
+        '<script src="./powerbi-report-authoring.min.js"></script>',
+        `<script src="${authoringJsUri}"></script>`
+      )
       .replace(
         "<head>",
         `<head>\n  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src ${webview.cspSource} 'unsafe-inline'; style-src 'unsafe-inline'; frame-src https://app.powerbi.com https://*.powerbi.com; connect-src https://*.powerbi.com https://*.analysis.windows.net;">`

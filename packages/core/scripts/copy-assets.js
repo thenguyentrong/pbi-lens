@@ -18,4 +18,15 @@ fs.copyFileSync(
   path.join(mediaDir, "powerbi.min.js")
 );
 
+// Report-authoring bundle (field-binding readback). Some releases ship only
+// the unminified dist; either way it lands under the stable .min.js name
+// that embed.html, the embed host and the webview rewrite all expect.
+let authoringSrc;
+try {
+  authoringSrc = require.resolve("powerbi-report-authoring/dist/powerbi-report-authoring.min.js");
+} catch {
+  authoringSrc = require.resolve("powerbi-report-authoring/dist/powerbi-report-authoring.js");
+}
+fs.copyFileSync(authoringSrc, path.join(mediaDir, "powerbi-report-authoring.min.js"));
+
 console.log("assets copied to", mediaDir);

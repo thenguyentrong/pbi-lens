@@ -13,13 +13,18 @@ import {
   PowerBiClient,
   CaptureSession,
   runDoctor,
+  getModelInfo,
+  buildReportContext,
+  Report,
+  ModelInfo,
+  VisualFields,
 } from "@pbi-lens/core";
 
 const program = new Command();
 program
   .name("pbi-lens")
   .description("Screenshot, query and publish Power BI reports — built for AI agent loops")
-  .version("0.1.0");
+  .version("0.2.0");
 
 function fail(err: unknown): never {
   console.error(err instanceof Error ? err.message : String(err));
@@ -244,6 +249,226 @@ program
       console.log(`\n${result.rows.length} row(s)`);
     } catch (e) {
       fail(e);
+    }
+  });
+
+/** Open a capture session against a resolved report. */
+async function openSession(report: Report): Promise<CaptureSession> {
+  const token = await getAccessToken();
+  return CaptureSession.open({ accessToken: token, embedUrl: report.embedUrl, reportId: report.id });
+}
+
+function printModel(model: ModelInfo): void {
+  console.log(`TABLES (${model.tables.length})`);
+  for (const t of model.tables) {
+    const cols = model.columns.filter((c) => c.table === t.name);
+    console.log(`  ${t.name}  [${t.storageMode ?? "?"}]  ${cols.length} columns`);
+  }
+  console.log(`\nMEASURES (${model.measures.length})`);
+  for (const m of model.measures) {
+    console.log(`  ${m.table}[${m.name}]${m.expression ? ` = ${m.expression}` : ""}`);
+  }
+  console.log(`\nRELATIONSHIPS (${model.relationships.length})`);
+  for (const r of model.relationships) {
+    const card = `${r.fromCardinality ?? "?"}:${r.toCardinality ?? "?"}`;
+    console.log(
+      `  ${r.fromTable}[${r.fromColumn}] -> ${r.toTable}[${r.toColumn}]  (${card}${r.isActive ? "" : ", INACTIVE"})`
+    );
+  }
+  for (const w of model.warnings) console.log(`\nwarn: ${w}`);
+}
+
+function printFields(f: VisualFields): void {
+  console.log(`${f.title ?? f.name}  [${f.type}]`);
+  for (const role of f.roles) {
+    const entries = (role.fields ?? []).filter((x) => x != null && typeof x === "object");
+    if (entries.length === 0) continue;
+    const fields = entries
+      .map((x) => {
+        if (x.measure) return `${x.table ?? "?"}[${x.measure}]`;
+        if (x.column) return `${x.table ?? "?"}[${x.column}]${x.aggregationFunction ? ` (${x.aggregationFunction})` : ""}`;
+        if (x.hierarchy) return `${x.table ?? "?"}[${x.hierarchy}.${x.hierarchyLevel ?? "*"}]`;
+        return JSON.stringify(x);
+      })
+      .join(", ");
+    console.log(`  ${role.role}: ${fields}`);
+  }
+}
+
+program
+  .command("model")
+  .description("Dataset schema: tables, columns, measures, relationships (DAX INFO.VIEW.*)")
+  .option("-w, --workspace <idOrName>")
+  .option("-r, --report <idOrName>")
+  .option("-d, --dataset <id>", "dataset id (overrides --report)")
+  .option("--include-hidden", "include hidden tables/columns/measures")
+  .option("--json", "output JSON")
+  .action(async (opts) => {
+    try {
+      const client = new PowerBiClient();
+      let datasetId = opts.dataset as string | undefined;
+      if (!datasetId) {
+        const { report } = await resolveTarget(client, opts);
+        if (!report) fail("Need -d <datasetId> or -w/-r to resolve a dataset.");
+        datasetId = report!.datasetId;
+      }
+      const model = await getModelInfo(client, datasetId!, { includeHidden: opts.includeHidden === true });
+      if (opts.json) return console.log(JSON.stringify(model, null, 2));
+      printModel(model);
+    } catch (e) {
+      fail(e);
+    }
+  });
+
+program
+  .command("fields")
+  .description("Field bindings of visuals: which column/measure is on which axis/role")
+  .option("-w, --workspace <idOrName>")
+  .option("-r, --report <idOrName>")
+  .requiredOption("-p, --page <nameOrDisplayName>", "page to inspect")
+  .option("--visual <nameOrTitle>", "only this visual")
+  .option("--json", "output JSON")
+  .action(async (opts) => {
+    let session: CaptureSession | undefined;
+    try {
+      const client = new PowerBiClient();
+      const { report } = await resolveTarget(client, opts);
+      if (!report) fail("No report given. Use -r <idOrName> or `pbi-lens use -r <name>`.");
+      session = await openSession(report!);
+      await session.setPage(opts.page);
+      if (opts.visual) {
+        const fields = await session.getVisualFields(opts.visual);
+        if (opts.json) return console.log(JSON.stringify(fields, null, 2));
+        return printFields(fields);
+      }
+      const visuals = await session.getVisuals();
+      const all: (VisualFields | { name: string; title?: string; type: string; error: string })[] = [];
+      for (const v of visuals) {
+        try {
+          all.push(await session.getVisualFields(v.name));
+        } catch (e) {
+          all.push({ name: v.name, title: v.title, type: v.type, error: (e as Error).message.split("\n")[0] });
+        }
+      }
+      if (opts.json) return console.log(JSON.stringify(all, null, 2));
+      for (const f of all) {
+        if ("error" in f) console.log(`${f.title ?? f.name}  [${f.type}]  (no fields: ${f.error})`);
+        else printFields(f);
+      }
+    } catch (e) {
+      fail(e);
+    } finally {
+      await session?.close();
+    }
+  });
+
+program
+  .command("data")
+  .description("Export a visual's data points as CSV (SDK exportData)")
+  .option("-w, --workspace <idOrName>")
+  .option("-r, --report <idOrName>")
+  .option("-p, --page <nameOrDisplayName>", "page containing the visual")
+  .requiredOption("--visual <nameOrTitle>", "visual to export")
+  .option("--rows <n>", "max rows", "1000")
+  .option("--underlying", "underlying rows instead of summarized")
+  .option("-o, --out <path>", "write CSV to a file instead of stdout")
+  .action(async (opts) => {
+    let session: CaptureSession | undefined;
+    try {
+      const client = new PowerBiClient();
+      const { report } = await resolveTarget(client, opts);
+      if (!report) fail("No report given. Use -r <idOrName> or `pbi-lens use -r <name>`.");
+      session = await openSession(report!);
+      if (opts.page) await session.setPage(opts.page);
+      const csv = await session.exportVisualData(opts.visual, {
+        exportType: opts.underlying ? "underlying" : "summarized",
+        rows: parseInt(opts.rows, 10),
+      });
+      if (opts.out) {
+        fs.writeFileSync(opts.out, csv);
+        console.log(path.resolve(opts.out));
+      } else {
+        console.log(csv);
+      }
+    } catch (e) {
+      fail(e);
+    } finally {
+      await session?.close();
+    }
+  });
+
+program
+  .command("filters")
+  .description("Active filter state: report, page and per-visual (incl. slicers)")
+  .option("-w, --workspace <idOrName>")
+  .option("-r, --report <idOrName>")
+  .option("-p, --page <nameOrDisplayName>", "page to inspect (default: active page)")
+  .option("--json", "compact JSON (default: pretty)")
+  .action(async (opts) => {
+    let session: CaptureSession | undefined;
+    try {
+      const client = new PowerBiClient();
+      const { report } = await resolveTarget(client, opts);
+      if (!report) fail("No report given. Use -r <idOrName> or `pbi-lens use -r <name>`.");
+      session = await openSession(report!);
+      if (opts.page) await session.setPage(opts.page);
+      const state = await session.getFiltersState();
+      console.log(JSON.stringify(state, null, opts.json ? 0 : 2));
+    } catch (e) {
+      fail(e);
+    } finally {
+      await session?.close();
+    }
+  });
+
+program
+  .command("context")
+  .description("One-shot orientation pack: pages, visuals + field bindings, model schema, filters")
+  .option("-w, --workspace <idOrName>")
+  .option("-r, --report <idOrName>")
+  .option("-p, --page <nameOrDisplayName>", "page to detail (default: active page)")
+  .option("--all-pages", "detail every page (~5-8 s per page)")
+  .option("--no-fields", "skip per-visual field bindings (faster)")
+  .option("--json", "output JSON")
+  .action(async (opts) => {
+    let session: CaptureSession | undefined;
+    try {
+      const client = new PowerBiClient();
+      const { workspace, report } = await resolveTarget(client, opts);
+      if (!report) fail("No report given. Use -r <idOrName> or `pbi-lens use -r <name>`.");
+      session = await openSession(report!);
+      const ctx = await buildReportContext(client, workspace, report!, session, {
+        page: opts.page,
+        allPages: opts.allPages === true,
+        includeFields: opts.fields !== false,
+      });
+      if (opts.json) return console.log(JSON.stringify(ctx, null, 2));
+      console.log(`REPORT ${ctx.report.name}  (workspace ${ctx.report.workspaceName}, dataset ${ctx.report.datasetId})`);
+      console.log(`\nPAGES (${ctx.pages.length})`);
+      for (const p of ctx.pages) console.log(`  ${p.name}  ${p.displayName}`);
+      for (const d of ctx.pagesDetail) {
+        console.log(`\nVISUALS on "${d.page.displayName}" (${d.visuals.length})`);
+        for (const v of d.visuals) {
+          console.log(`  ${v.name}  [${v.type}]  ${v.title ?? "(untitled)"}`);
+          if (v.fields && !("error" in v.fields)) {
+            for (const role of v.fields.roles) {
+              const entries = (role.fields ?? []).filter((x) => x != null && typeof x === "object");
+              if (entries.length === 0) continue;
+              const fields = entries
+                .map((x) => (x.measure ? `${x.table ?? "?"}[${x.measure}]` : `${x.table ?? "?"}[${x.column ?? x.hierarchy}]`))
+                .join(", ");
+              console.log(`      ${role.role}: ${fields}`);
+            }
+          }
+        }
+      }
+      console.log("");
+      printModel(ctx.model);
+      for (const w of ctx.warnings) console.log(`warn: ${w}`);
+    } catch (e) {
+      fail(e);
+    } finally {
+      await session?.close();
     }
   });
 

@@ -17,6 +17,9 @@ export async function startEmbedHost(): Promise<EmbedHost> {
   const mediaDir = path.join(__dirname, "..", "media");
   app.get("/", (_req, res) => res.sendFile(path.join(mediaDir, "embed.html")));
   app.get("/powerbi.min.js", (_req, res) => res.sendFile(path.join(mediaDir, "powerbi.min.js")));
+  app.get("/powerbi-report-authoring.min.js", (_req, res) =>
+    res.sendFile(path.join(mediaDir, "powerbi-report-authoring.min.js"))
+  );
 
   const server: http.Server = await new Promise((resolve) => {
     const s = app.listen(0, "127.0.0.1", () => resolve(s));
