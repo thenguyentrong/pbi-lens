@@ -11,6 +11,7 @@ import {
   saveConfig,
   PowerBiClient,
   CaptureSession,
+  runDoctor,
 } from "@pbi-lens/core";
 
 const program = new Command();
@@ -34,7 +35,7 @@ async function resolveTarget(client: PowerBiClient, opts: TargetOpts) {
   const cfg = loadConfig();
   const wsArg = opts.workspace ?? cfg.defaultWorkspace;
   const repArg = opts.report ?? cfg.defaultReport;
-  if (!wsArg) fail("No workspace given. Use -w <idOrName> or `pbi-lens use -w <name>` to set a default.");
+  if (!wsArg) fail("No workspace given. Use -w <idOrName> (-w my for My Workspace, free license) or `pbi-lens use -w <name>` to set a default.");
   const workspace = await client.resolveWorkspace(wsArg!);
   if (!repArg) return { workspace, report: undefined };
   const report = await client.resolveReport(workspace.id, repArg);
@@ -54,6 +55,20 @@ program
       }
       const account = await login({}, (msg) => console.log(`\n${msg}\n`));
       console.log(`Signed in as ${account.username}`);
+    } catch (e) {
+      fail(e);
+    }
+  });
+
+program
+  .command("doctor")
+  .description("Preflight checks: browser, embed assets, offline capture pipeline, sign-in state")
+  .action(async () => {
+    try {
+      const checks = await runDoctor();
+      const symbols = { ok: "ok  ", warn: "warn", fail: "FAIL" } as const;
+      for (const c of checks) console.log(`${symbols[c.status]}  ${c.name.padEnd(18)} ${c.detail}`);
+      if (checks.some((c) => c.status === "fail")) process.exit(1);
     } catch (e) {
       fail(e);
     }

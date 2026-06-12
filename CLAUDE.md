@@ -50,7 +50,10 @@ If Power BI Desktop is open, its local Analysis Services instance is reachable; 
 
 ## Gotchas
 
-- `Not signed in` → ask the user to run `pbi-lens login` (interactive device code; you can't complete it for them).
+- Anything broken or first run on a new machine → `pbi-lens doctor` first; it verifies browser, assets and the capture pipeline offline and reports sign-in state.
+- `Not signed in` → ask the user to run `pbi-lens login` (interactive device code; you can't complete it for them). Sign-in needs a **work/school account** with Pro — personal @outlook.com/@gmail.com accounts are rejected by Microsoft. The browser step can be completed on any device (phone/other PC); the CLI session stays on this machine.
 - 403 on executeQueries → user lacks Build permission on the dataset, or tenant disabled the executeQueries setting.
-- Empty workspace list → account has no Pro license or no workspace access.
+- Free-license account (no Pro) → only `-w my` (My Workspace) works; shared workspaces need Pro. `ls` always lists My Workspace first.
+- Empty report list / 401 on `/groups` → account has no Power BI license at all; user can self-sign-up for a free one with a work/school account.
 - Renders take 4–8 s; `--all-pages` reuses one browser session, prefer it over per-page invocations.
+- Capture drives the installed Edge/Chrome headlessly (playwright-core, no browser download). "No Chromium-based browser found" → install Edge or Chrome.

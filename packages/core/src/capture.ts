@@ -1,5 +1,26 @@
-import { chromium, Browser, Page } from "playwright";
+import { chromium, Browser, Page } from "playwright-core";
 import { startEmbedHost, EmbedHost } from "./embedHost";
+
+/**
+ * playwright-core ships no browser binaries. Drive an installed Edge or
+ * Chrome (Edge is preinstalled on Windows 10/11), falling back to a
+ * playwright-managed Chromium if the user has one.
+ */
+export async function launchBrowser(): Promise<{ browser: Browser; channel: string }> {
+  const channels: (string | undefined)[] = ["msedge", "chrome", undefined];
+  let lastError: unknown;
+  for (const channel of channels) {
+    try {
+      const browser = await chromium.launch({ headless: true, channel });
+      return { browser, channel: channel ?? "playwright-chromium" };
+    } catch (e) {
+      lastError = e;
+    }
+  }
+  throw new Error(
+    `No Chromium-based browser found. Install Microsoft Edge or Google Chrome.\n${(lastError as Error)?.message ?? ""}`
+  );
+}
 
 export interface EmbedTarget {
   accessToken: string;
@@ -55,7 +76,7 @@ export class CaptureSession {
 
   static async open(target: EmbedTarget, opts: { width?: number; height?: number } = {}): Promise<CaptureSession> {
     const host = await startEmbedHost();
-    const browser = await chromium.launch({ headless: true });
+    const { browser } = await launchBrowser();
     const page = await browser.newPage({
       viewport: { width: opts.width ?? 1600, height: opts.height ?? 900 },
       deviceScaleFactor: 2,

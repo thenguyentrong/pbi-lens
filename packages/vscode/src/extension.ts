@@ -11,10 +11,13 @@ import {
   Workspace,
 } from "@pbi-lens/core";
 
-const coreMediaDir = path.join(
-  path.dirname(require.resolve("@pbi-lens/core/package.json")),
-  "media"
-);
+// Bundled .vsix layout ships media/ next to dist/; in the dev monorepo the
+// assets live in @pbi-lens/core.
+const coreMediaDir = (() => {
+  const bundled = path.join(__dirname, "..", "media");
+  if (fs.existsSync(path.join(bundled, "embed.html"))) return bundled;
+  return path.join(path.dirname(require.resolve("@pbi-lens/core/package.json")), "media");
+})();
 
 let panel: vscode.WebviewPanel | undefined;
 let currentReport: Report | undefined;

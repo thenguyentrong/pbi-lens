@@ -9,6 +9,19 @@ export interface Workspace {
   name: string;
 }
 
+/**
+ * The personal "My Workspace" — works with a FREE Power BI license (no Pro).
+ * Its REST routes have no /groups/{id} prefix, so it gets a sentinel id.
+ */
+export const MY_WORKSPACE: Workspace = { id: "my", name: "My Workspace" };
+
+const MY_ALIASES = new Set(["my", "me", "my workspace", "myworkspace"]);
+
+/** Route prefix for a workspace: "" for My Workspace, /groups/{id} otherwise. */
+function groupPath(workspaceId: string): string {
+  return workspaceId === MY_WORKSPACE.id ? "" : `/groups/${workspaceId}`;
+}
+
 export interface Report {
   id: string;
   name: string;
@@ -53,28 +66,31 @@ export class PowerBiClient {
   async listWorkspaces(): Promise<Workspace[]> {
     const token = await this.token();
     const data = await api<{ value: Workspace[] }>(token, "/groups");
-    return data.value;
+    // My Workspace is not a group; surface it explicitly so free-license
+    // accounts (which have no groups at all) see their one usable target.
+    return [MY_WORKSPACE, ...data.value];
   }
 
   async listReports(workspaceId: string): Promise<Report[]> {
     const token = await this.token();
-    const data = await api<{ value: Report[] }>(token, `/groups/${workspaceId}/reports`);
+    const data = await api<{ value: Report[] }>(token, `${groupPath(workspaceId)}/reports`);
     return data.value;
   }
 
   async getReport(workspaceId: string, reportId: string): Promise<Report> {
     const token = await this.token();
-    return api<Report>(token, `/groups/${workspaceId}/reports/${reportId}`);
+    return api<Report>(token, `${groupPath(workspaceId)}/reports/${reportId}`);
   }
 
   async listPages(workspaceId: string, reportId: string): Promise<ReportPage[]> {
     const token = await this.token();
-    const data = await api<{ value: ReportPage[] }>(token, `/groups/${workspaceId}/reports/${reportId}/pages`);
+    const data = await api<{ value: ReportPage[] }>(token, `${groupPath(workspaceId)}/reports/${reportId}/pages`);
     return data.value;
   }
 
-  /** Resolve a workspace by id or (case-insensitive) name. */
+  /** Resolve a workspace by id or (case-insensitive) name. "my" → My Workspace. */
   async resolveWorkspace(idOrName: string): Promise<Workspace> {
+    if (MY_ALIASES.has(idOrName.toLowerCase())) return MY_WORKSPACE;
     const all = await this.listWorkspaces();
     const found =
       all.find((w) => w.id === idOrName) ??
@@ -129,7 +145,7 @@ export class PowerBiClient {
     const buffer = fs.readFileSync(pbixPath);
     const form = new FormData();
     form.append("file", new Blob([buffer]), path.basename(pbixPath));
-    const url = `${API}/groups/${workspaceId}/imports?datasetDisplayName=${encodeURIComponent(name)}&nameConflict=CreateOrOverwrite`;
+    const url = `${API}${groupPath(workspaceId)}/imports?datasetDisplayName=${encodeURIComponent(name)}&nameConflict=CreateOrOverwrite`;
     const res = await fetch(url, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
@@ -149,7 +165,7 @@ export class PowerBiClient {
       const token = await this.token();
       const imp = await api<{ importState: string; reports?: { name: string }[] }>(
         token,
-        `/groups/${workspaceId}/imports/${importId}`
+        `${groupPath(workspaceId)}/imports/${importId}`
       );
       if (imp.importState === "Succeeded") return;
       if (imp.importState === "Failed") throw new Error("Import failed (importState=Failed).");

@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-vsix/
 out/
 *.vsix
 *.png
@@ -7,3 +8,4 @@ out/
 .pbi-lens/
 *.tsbuildinfo
 .DS_Store
+sample.pbix

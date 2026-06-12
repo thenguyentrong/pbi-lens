@@ -1,6 +1,13 @@
 # PBI Lens
 
-View Power BI reports **inside VS Code** — and let Claude (or any AI agent) actually *see* them: screenshot pages, set filters/slicers, query the data with DAX, edit the report source, and republish. Built for fully automated agent loops, Pro license only (no Premium needed).
+View Power BI reports **inside VS Code** — and let Claude (or any AI agent) actually *see* them: screenshot pages, set filters/slicers, query the data with DAX, edit the report source, and republish. Built for fully automated agent loops. Works with a **free** Power BI license via My Workspace (`-w my`); Pro only needed for shared workspaces, Premium never.
+
+## Costs
+
+Sign-in, tokens and all API calls used here are free of charge. The only thing Microsoft charges for is a **Pro license**, and that's only required for *shared* workspaces. The free path:
+
+1. Sign up for a free Power BI license with any work/school account (e.g. a university account) at [powerbi.microsoft.com](https://powerbi.microsoft.com) — no credit card.
+2. Use `-w my` everywhere (or `pbi-lens use -w my` once). Publish, screenshot, DAX — all against your personal My Workspace.
 
 ## How it works
 
@@ -17,27 +24,37 @@ packages/cli      `pbi-lens` CLI — the agent-facing surface
 packages/vscode   VS Code extension — the human-facing viewer
 ```
 
-## Setup
+## Install the extension (any PC)
+
+1. Download `pbi-lens-vscode-<version>.vsix` from this repo's [Releases](https://github.com/thenguyentrong/pbi-lens/releases) page.
+2. In VS Code: **Extensions panel → `⋯` menu → Install from VSIX...** (or `code --install-extension pbi-lens-vscode-0.1.0.vsix`).
+3. Run **PBI Lens: Sign in to Power BI** from the Command Palette, then **PBI Lens: Open Report**.
+
+Requirements on the target PC: VS Code, Microsoft Edge or Chrome (Edge ships with Windows — used headlessly for captures), and a Power BI work account with a Pro license. No Node.js needed for the extension.
+
+To rebuild the .vsix: `npm run package:vsix`.
+
+## Dev setup (this repo, CLI included)
 
 ```bash
 npm install
 npm run build
-npx playwright install chromium
 node packages/cli/dist/index.js login    # device code sign-in (work account with Pro)
 ```
 
-Optionally link the CLI globally: `npm link -w pbi-lens` → `pbi-lens` on PATH.
+Optionally link the CLI globally: `npm link -w pbi-lens` → `pbi-lens` on PATH. Captures use your installed Edge/Chrome — no browser download.
 
 Auth uses the Azure CLI well-known client id by default (pre-consented in most tenants). If your tenant blocks it, register an Entra app (public client, delegated Power BI scopes) and run `pbi-lens login --client-id <id> --tenant <tenantId>`.
 
 ## CLI
 
 ```bash
+pbi-lens doctor                              # preflight: browser, assets, offline capture test, sign-in state
 pbi-lens ls                                  # workspaces
 pbi-lens ls -w "My Workspace"                # reports
 pbi-lens ls -w "My Workspace" -r "Sales"     # pages
 pbi-lens ls -w "My Workspace" -r "Sales" -p "Overview"   # visuals
-pbi-lens use -w "My Workspace" -r "Sales"    # save defaults, then omit -w/-r
+pbi-lens use -w my -r "Sales"                # save defaults, then omit -w/-r ("my" = My Workspace, free license)
 
 pbi-lens shot -p "Overview" -o overview.png
 pbi-lens shot --all-pages -o shots/
