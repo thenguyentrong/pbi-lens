@@ -48,6 +48,8 @@ const manifest = {
 };
 fs.writeFileSync(path.join(staging, "package.json"), JSON.stringify(manifest, null, 2));
 fs.copyFileSync(path.join(repoRoot, "README.md"), path.join(staging, "README.md"));
+fs.copyFileSync(path.join(repoRoot, "LICENSE"), path.join(staging, "LICENSE"));
+fs.copyFileSync(path.join(repoRoot, "packages", "vscode", "icon.png"), path.join(staging, "icon.png"));
 
 // 4. Install the single runtime dep and package.
 run("npm install --omit=dev --no-audit --no-fund", staging);

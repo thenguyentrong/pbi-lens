@@ -28,8 +28,8 @@ packages/mcp      MCP server — gives Claude / Copilot / Codex the report info 
 ## Install the extension (any PC)
 
 1. Download `pbi-lens-vscode-<version>.vsix` from this repo's [Releases](https://github.com/thenguyentrong/pbi-lens/releases) page.
-2. In VS Code: **Extensions panel → `⋯` menu → Install from VSIX...** (or `code --install-extension pbi-lens-vscode-0.1.0.vsix`).
-3. Run **PBI Lens: Sign in to Power BI** from the Command Palette, then **PBI Lens: Open Report**.
+2. In VS Code: **Extensions panel → `⋯` menu → Install from VSIX...** (or `code --install-extension pbi-lens-vscode-0.2.0.vsix`).
+3. A **Power BI Reports** tree appears in the Explorer sidebar — sign in there, then click any workspace → report → page to open it live. (Command Palette still works: **PBI Lens: Sign in / Open Report / Capture Page**.)
 
 Requirements on the target PC: VS Code, Microsoft Edge or Chrome (Edge ships with Windows — used headlessly for captures), and a Power BI work account with a Pro license. No Node.js needed for the extension.
 
@@ -75,7 +75,7 @@ pbi-lens filters -p "Overview"               # active filter + slicer state
 
 ## Give your AI the plug (MCP)
 
-`packages/mcp` is an MCP server with 15 tools (`get_report_context`, `get_visual_fields`, `get_model`, `run_dax`, `get_visual_data`, `get_filters`, `screenshot_page`, `set_filters`, `publish_pbix`, ...). Screenshots come back as real images the AI can see. It works in every MCP-capable agent:
+`packages/mcp` is an MCP server with 16 tools (`get_report_context`, `get_visual_fields`, `get_model`, `run_dax`, `get_visual_data`, `get_filters`, `screenshot_page`, `set_filters`, `publish_pbix`, `refresh_report`, ...). Screenshots come back as real images the AI can see; all JSON outputs are token-lean (compact, noise-free — the model schema alone is ~84% smaller than the raw API shape). Publishing auto-reloads the warm render session, so post-edit screenshots are never stale. It works in every MCP-capable agent:
 
 - **Claude Code:** `claude mcp add --scope user pbi-lens -- node <repo>/packages/mcp/dist/index.js` (already registered on this machine; the repo also has a project-scope `.mcp.json`).
 - **GitHub Copilot Chat (VS Code):** `.vscode/mcp.json` in this repo, or user-wide in `%APPDATA%\Code\User\mcp.json` (already set up on this machine). Enable agent mode to see the tools.

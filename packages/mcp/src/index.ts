@@ -4,8 +4,20 @@ import * as fs from "fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { CaptureSession, buildReportContext, getAccessToken, getModelInfo } from "@pbi-lens/core";
+import {
+  CaptureSession,
+  buildReportContext,
+  getAccessToken,
+  getModelInfo,
+  compactModel,
+  FiltersState,
+  VisualFields,
+  ReportContext,
+  tuneNetworkForVpn,
+} from "@pbi-lens/core";
 import { client, resolveWorkspace, resolveTarget, SessionManager } from "./session";
+
+tuneNetworkForVpn();
 
 const server = new McpServer({ name: "pbi-lens", version: "0.2.0" });
 const sessions = new SessionManager();
@@ -14,16 +26,13 @@ const sessions = new SessionManager();
 
 type ToolResult = {
   content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[];
-  structuredContent?: Record<string, unknown>;
   isError?: boolean;
 };
 
+// Compact JSON, no structuredContent duplicate — every byte here lands in the
+// agent's context window.
 function ok(result: unknown): ToolResult {
-  const structured = (Array.isArray(result) ? { items: result } : result) as Record<string, unknown>;
-  return {
-    content: [{ type: "text", text: JSON.stringify(result, null, 1) }],
-    structuredContent: structured,
-  };
+  return { content: [{ type: "text", text: JSON.stringify(result) }] };
 }
 
 function png(buffer: Buffer, meta: Record<string, unknown>): ToolResult {
@@ -32,7 +41,56 @@ function png(buffer: Buffer, meta: Record<string, unknown>): ToolResult {
       { type: "image", data: buffer.toString("base64"), mimeType: "image/png" },
       { type: "text", text: JSON.stringify(meta) },
     ],
-    structuredContent: meta,
+  };
+}
+
+// ---------- token-diet transforms ----------
+
+/** Bindings: drop empty roles into a name list instead of empty arrays. */
+function slimFields(f: VisualFields): Record<string, unknown> {
+  const bound = f.roles.filter((r) => (r.fields ?? []).some((x) => x != null));
+  const empty = f.roles.filter((r) => !(r.fields ?? []).some((x) => x != null)).map((r) => r.role);
+  return {
+    name: f.name,
+    ...(f.title ? { title: f.title } : {}),
+    type: f.type,
+    roles: bound.map((r) => ({ role: r.role, fields: (r.fields ?? []).filter((x) => x != null) })),
+    ...(empty.length ? { emptyRoles: empty } : {}),
+  };
+}
+
+/** Filter state: visuals with no filters and no slicer state are noise. */
+function slimFilters(s: FiltersState): Record<string, unknown> {
+  const visuals = s.visuals
+    .filter((v) => (v.filters && v.filters.length > 0) || v.slicerState !== undefined)
+    .map((v) => ({
+      name: v.name,
+      ...(v.title ? { title: v.title } : {}),
+      type: v.type,
+      ...(v.filters && v.filters.length ? { filters: v.filters } : {}),
+      ...(v.slicerState !== undefined ? { slicerState: v.slicerState } : {}),
+    }));
+  return { report: s.report, page: s.page, visuals };
+}
+
+/** Context pack: compact model, slim bindings, slim filters. */
+function slimContext(ctx: ReportContext): Record<string, unknown> {
+  return {
+    report: ctx.report,
+    pages: ctx.pages.map((p) => ({ name: p.name, displayName: p.displayName })),
+    model: compactModel(ctx.model),
+    pagesDetail: ctx.pagesDetail.map((d) => ({
+      page: { name: d.page.name, displayName: d.page.displayName },
+      visuals: d.visuals.map((v) => ({
+        name: v.name,
+        ...(v.title ? { title: v.title } : {}),
+        type: v.type,
+        ...(v.layout ? { layout: v.layout } : {}),
+        ...(v.fields ? { fields: "error" in v.fields ? v.fields : slimFields(v.fields).roles } : {}),
+      })),
+    })),
+    filters: "error" in ctx.filters ? ctx.filters : slimFilters(ctx.filters),
+    ...(ctx.warnings.length ? { warnings: ctx.warnings } : {}),
   };
 }
 
@@ -131,11 +189,13 @@ tool(
     const { workspace, report } = await resolveTarget(args);
     return await sessions.withSession(workspace, report, async (s) =>
       ok(
-        await buildReportContext(client, workspace, report, s, {
-          page: args.page as string | undefined,
-          allPages: args.all_pages === true,
-          includeFields: args.include_fields !== false,
-        })
+        slimContext(
+          await buildReportContext(client, workspace, report, s, {
+            page: args.page as string | undefined,
+            allPages: args.all_pages === true,
+            includeFields: args.include_fields !== false,
+          })
+        )
       )
     );
   }
@@ -143,14 +203,16 @@ tool(
 
 tool(
   "get_model",
-  "Dataset schema: tables, columns, measures and relationships (via DAX INFO.VIEW.*). Auto date/time noise is filtered out.",
+  "Dataset schema: tables, columns, measures and relationships (via DAX INFO.VIEW.*). Auto date/time noise is filtered out. Default output is compact; detail=full adds per-column format/sort/category metadata.",
   {
     include_hidden: z.boolean().optional().describe("Include hidden tables/columns/measures."),
+    detail: z.enum(["compact", "full"]).optional().describe("compact (default, ~5x fewer tokens) or full."),
     ...targetParams,
   },
   async (args) => {
     const { report } = await resolveTarget(args);
-    return ok(await getModelInfo(client, report.datasetId, { includeHidden: args.include_hidden === true }));
+    const model = await getModelInfo(client, report.datasetId, { includeHidden: args.include_hidden === true });
+    return ok(args.detail === "full" ? model : compactModel(model));
   }
 );
 
@@ -166,7 +228,7 @@ tool(
     const { workspace, report } = await resolveTarget(args);
     return await sessions.withSession(workspace, report, async (s) => {
       if (args.page) await s.setPage(args.page as string);
-      return ok(await s.getVisualFields(args.visual as string));
+      return ok(slimFields(await s.getVisualFields(args.visual as string)));
     });
   }
 );
@@ -189,23 +251,20 @@ tool(
         exportType: (args.export_type as "summarized" | "underlying" | undefined) ?? "summarized",
         rows: (args.rows as number | undefined) ?? 1000,
       });
-      return {
-        content: [{ type: "text", text: csv }],
-        structuredContent: { visual: args.visual, exportType: args.export_type ?? "summarized", csv },
-      } satisfies ToolResult;
+      return { content: [{ type: "text", text: csv }] } satisfies ToolResult;
     });
   }
 );
 
 tool(
   "get_filters",
-  "Active filter state: report level, page level and per visual (slicer selections included).",
+  "Active filter state: report level, page level and per visual (slicer selections included; visuals without filters are omitted).",
   { page: pageParam, ...targetParams },
   async (args) => {
     const { workspace, report } = await resolveTarget(args);
     return await sessions.withSession(workspace, report, async (s) => {
       if (args.page) await s.setPage(args.page as string);
-      return ok(await s.getFiltersState());
+      return ok(slimFilters(await s.getFiltersState()));
     });
   }
 );
@@ -298,7 +357,7 @@ tool(
       const filters = args.filters as unknown[];
       if (filters.length === 0) await s.clearFilters();
       else await s.setFilters(filters);
-      return ok(await s.getFiltersState());
+      return ok(slimFilters(await s.getFiltersState()));
     });
   }
 );
@@ -317,7 +376,7 @@ tool(
     return await sessions.withSession(workspace, report, async (s) => {
       if (args.page) await s.setPage(args.page as string);
       await s.setSlicer(args.visual as string, args.state);
-      return ok(await s.getFiltersState());
+      return ok(slimFilters(await s.getFiltersState()));
     });
   }
 );
@@ -336,7 +395,20 @@ tool(
     const workspace = await resolveWorkspace(args.workspace as string | undefined);
     const imp = await client.importPbix(workspace.id, pbixPath, args.name as string | undefined);
     await client.waitForImport(workspace.id, imp.id);
-    return ok({ importId: imp.id, status: "Succeeded", workspace: workspace.name });
+    // The warm embed still shows the pre-publish report — drop it so the next
+    // screenshot/query re-embeds the fresh version.
+    await sessions.invalidate();
+    return ok({ importId: imp.id, status: "Succeeded", workspace: workspace.name, session: "refreshed" });
+  }
+);
+
+tool(
+  "refresh_report",
+  "Reload the report in the warm session (call after the report was republished outside this server, e.g. from Power BI Desktop, so screenshots and queries reflect the new version).",
+  {},
+  async () => {
+    await sessions.invalidate();
+    return ok({ session: "refreshed", note: "Next tool call re-embeds the current published version." });
   }
 );
 

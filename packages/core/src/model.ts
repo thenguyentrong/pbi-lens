@@ -184,3 +184,37 @@ export async function getModelInfo(
 
   return { tables, columns, measures, relationships, warnings };
 }
+
+/**
+ * Token-lean model shape for AI consumption: columns grouped per table as
+ * "Name (type)" strings, relationships as one-line strings. Roughly 4-5x
+ * smaller than ModelInfo in serialized form, same information.
+ */
+export interface CompactModel {
+  tables: string[];
+  columns: Record<string, string[]>;
+  measures: { table: string; name: string; expression?: string }[];
+  relationships: string[];
+  warnings: string[];
+}
+
+export function compactModel(m: ModelInfo): CompactModel {
+  const columns: Record<string, string[]> = {};
+  for (const c of m.columns) {
+    (columns[c.table] ??= []).push(`${c.name}${c.dataType ? ` (${c.dataType})` : ""}`);
+  }
+  return {
+    tables: m.tables.map((t) => `${t.name}${t.storageMode ? ` [${t.storageMode}]` : ""}${t.isHidden ? " (hidden)" : ""}`),
+    columns,
+    measures: m.measures.map((x) => ({
+      table: x.table,
+      name: x.name,
+      ...(x.expression ? { expression: x.expression } : {}),
+    })),
+    relationships: m.relationships.map(
+      (r) =>
+        `${r.fromTable}[${r.fromColumn}] -> ${r.toTable}[${r.toColumn}] (${r.fromCardinality ?? "?"}:${r.toCardinality ?? "?"}${r.isActive ? "" : ", INACTIVE"})`
+    ),
+    warnings: m.warnings,
+  };
+}

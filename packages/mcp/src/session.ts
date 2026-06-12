@@ -106,6 +106,14 @@ export class SessionManager {
     if (session) await session.close().catch(() => {});
   }
 
+  /**
+   * Drop the warm session so the next tool call re-embeds fresh. Call after
+   * anything that changes the published report (publish, Desktop edits).
+   */
+  async invalidate(): Promise<void> {
+    await this.closeSession();
+  }
+
   async dispose(): Promise<void> {
     clearInterval(this.reaper);
     await this.closeSession();

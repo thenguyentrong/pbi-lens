@@ -16,10 +16,13 @@ If the `pbi-lens` MCP server is connected (it's registered user-wide on this mac
 | Active filters / slicer selections | `get_filters` |
 | See a page or visual (returns a PNG you can view) | `screenshot_page`, `screenshot_visual` |
 | Change state before a shot | `set_filters`, `set_slicer` |
-| Ship an edited .pbix | `publish_pbix` |
+| Ship an edited .pbix | `publish_pbix` (auto-reloads the warm session) |
+| Report was republished from Desktop | `refresh_report` (drops the warm session so the next call sees the new version) |
 | Discover targets | `list_workspaces`, `list_reports`, `list_pages`, `list_visuals` |
 
 All tools default to the saved workspace/report (`pbi-lens use -w … -r …`), so you can usually omit `workspace`/`report` params.
+
+**Token notes:** outputs are deliberately compact (single-line JSON, empty roles/filters omitted, model ~84% smaller than raw). `get_model` accepts `detail:"full"` if you really need per-column format/sort metadata. Prefer `get_visual_fields`/`run_dax` over `get_report_context` with `all_pages` when you only need one thing.
 
 ## The loop
 

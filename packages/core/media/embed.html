@@ -97,7 +97,20 @@
           return report.getActivePage().then(function (page) {
             return page.getVisuals().then(function (visuals) {
               return visuals.map(function (v) {
-                return { name: v.name, title: v.title, type: v.type, layout: v.layout };
+                // Round layout to whole report-pixels — sub-pixel float noise
+                // just burns tokens when agents read this.
+                var l = v.layout;
+                return {
+                  name: v.name,
+                  title: v.title,
+                  type: v.type,
+                  layout: l && {
+                    x: Math.round(l.x),
+                    y: Math.round(l.y),
+                    width: Math.round(l.width),
+                    height: Math.round(l.height),
+                  },
+                };
               });
             });
           });

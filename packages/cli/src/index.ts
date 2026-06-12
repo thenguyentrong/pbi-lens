@@ -18,7 +18,10 @@ import {
   Report,
   ModelInfo,
   VisualFields,
+  tuneNetworkForVpn,
 } from "@pbi-lens/core";
+
+tuneNetworkForVpn();
 
 const program = new Command();
 program
