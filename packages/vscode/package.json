@@ -1,9 +1,10 @@
 {
   "name": "pbi-lens-vscode",
-  "displayName": "PBI Lens",
+  "displayName": "PBI Lens (Power BI Viewer + MCP)",
   "description": "View Power BI reports inside VS Code — and let your AI agent see them too",
   "version": "0.2.0",
-  "publisher": "vinh",
+  "publisher": "duckduck-beps",
+  "author": "duckduck_beps",
   "private": true,
   "engines": {
     "vscode": "^1.90.0"
