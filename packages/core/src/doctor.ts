@@ -28,7 +28,9 @@ export async function runDoctor(): Promise<DoctorCheck[]> {
   });
 
   const mediaDir = path.join(__dirname, "..", "media");
-  const missing = ["embed.html", "powerbi.min.js"].filter((f) => !fs.existsSync(path.join(mediaDir, f)));
+  const missing = ["embed.html", "powerbi.min.js", "powerbi-report-authoring.min.js"].filter(
+    (f) => !fs.existsSync(path.join(mediaDir, f))
+  );
   checks.push({
     name: "embed assets",
     status: missing.length === 0 ? "ok" : "fail",

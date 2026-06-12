@@ -98,6 +98,36 @@ export async function login(
 }
 
 /**
+ * Interactive sign-in via the system browser (authorization-code flow with a
+ * loopback redirect). Use this when the tenant's Conditional Access policy
+ * blocks the device-code flow — a real browser session satisfies MFA /
+ * compliant-device / location policies that device code cannot.
+ */
+export async function loginInteractive(auth: AuthConfig = {}): Promise<AccountInfo> {
+  const pca = buildPca(auth);
+  const result = await pca.acquireTokenInteractive({
+    scopes: [POWERBI_SCOPE],
+    openBrowser: async (url: string) => {
+      const { spawn } = await import("child_process");
+      // NB: do NOT route the URL through `cmd /c start` on Windows — cmd treats
+      // the `&` separating query params as a command separator and truncates the
+      // URL (dropping scope/redirect → AADSTS900144). rundll32's FileProtocolHandler
+      // hands the full URL to the default browser without shell parsing.
+      const cmd =
+        process.platform === "win32"
+          ? { file: "rundll32", args: ["url.dll,FileProtocolHandler", url] }
+          : process.platform === "darwin"
+            ? { file: "open", args: [url] }
+            : { file: "xdg-open", args: [url] };
+      spawn(cmd.file, cmd.args, { detached: true, stdio: "ignore" }).unref();
+    },
+    successTemplate: "Signed in to Power BI. You can close this tab and return to the terminal.",
+  });
+  if (!result?.account) throw new Error("Login did not return an account.");
+  return result.account;
+}
+
+/**
  * Returns a valid Power BI access token, refreshing silently from the cache.
  * Throws with a helpful message when no cached session exists.
  */

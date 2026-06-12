@@ -1,16 +1,36 @@
 {
   "name": "pbi-lens-vscode",
-  "displayName": "PBI Lens",
+  "displayName": "PBI Lens (Power BI Viewer + MCP)",
   "description": "View Power BI reports inside VS Code — and let your AI agent see them too",
-  "version": "0.1.0",
-  "publisher": "vinh",
+  "version": "0.2.0",
+  "publisher": "duckduck-beps",
+  "author": "duckduck_beps",
   "private": true,
   "engines": {
     "vscode": "^1.90.0"
   },
   "categories": [
-    "Visualization"
+    "Visualization",
+    "Data Science"
   ],
+  "keywords": [
+    "power bi",
+    "powerbi",
+    "dashboard",
+    "report",
+    "dax",
+    "mcp",
+    "ai",
+    "claude",
+    "copilot",
+    "screenshot"
+  ],
+  "icon": "icon.png",
+  "license": "MIT",
+  "galleryBanner": {
+    "color": "#1e2230",
+    "theme": "dark"
+  },
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
@@ -26,8 +46,37 @@
       {
         "command": "pbiLens.capturePage",
         "title": "PBI Lens: Capture Page for Claude (PNG)"
+      },
+      {
+        "command": "pbiLens.refreshReports",
+        "title": "PBI Lens: Refresh Reports",
+        "icon": "$(refresh)"
       }
     ],
+    "views": {
+      "explorer": [
+        {
+          "id": "pbiLensReports",
+          "name": "Power BI Reports",
+          "icon": "$(graph)"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "pbiLensReports",
+        "contents": "Browse your Power BI workspaces, reports and pages here.\n[Sign in to Power BI](command:pbiLens.login)\nAfter signing in, click refresh if the list stays empty."
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "pbiLens.refreshReports",
+          "when": "view == pbiLensReports",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "PBI Lens",
       "properties": {
@@ -48,7 +97,7 @@
     "build": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@pbi-lens/core": "0.1.0"
+    "@pbi-lens/core": "0.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

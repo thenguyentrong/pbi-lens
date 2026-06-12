@@ -8,6 +8,7 @@
     #container iframe { border: 0; }
   </style>
   <script src="./powerbi.min.js"></script>
+  <script src="./powerbi-report-authoring.min.js"></script>
 </head>
 <body>
   <div id="container"></div>
@@ -48,11 +49,16 @@
             embedUrl: config.embedUrl,
             accessToken: config.accessToken,
             tokenType: models.TokenType.Aad,
-            permissions: models.Permissions.Read,
+            // Permissions.All + a viewMode switch lets the report-authoring
+            // APIs (field bindings) work without re-embedding.
+            permissions: models.Permissions.All,
+            viewMode: config.mode === "edit" ? models.ViewMode.Edit : models.ViewMode.View,
             settings: {
               panes: {
                 filters: { visible: false },
                 pageNavigation: { visible: config.showNav !== false },
+                visualizations: { visible: false },
+                fields: { visible: false },
               },
               background: models.BackgroundType.Default,
             },
@@ -91,7 +97,20 @@
           return report.getActivePage().then(function (page) {
             return page.getVisuals().then(function (visuals) {
               return visuals.map(function (v) {
-                return { name: v.name, title: v.title, type: v.type, layout: v.layout };
+                // Round layout to whole report-pixels — sub-pixel float noise
+                // just burns tokens when agents read this.
+                var l = v.layout;
+                return {
+                  name: v.name,
+                  title: v.title,
+                  type: v.type,
+                  layout: l && {
+                    x: Math.round(l.x),
+                    y: Math.round(l.y),
+                    width: Math.round(l.width),
+                    height: Math.round(l.height),
+                  },
+                };
               });
             });
           });
@@ -124,6 +143,90 @@
         getActivePageSize: function () {
           return report.getActivePage().then(function (page) {
             return page.defaultSize;
+          });
+        },
+
+        // View <-> Edit. Field-binding readback (report authoring APIs) may
+        // require edit mode; screenshots must be taken in view mode.
+        switchMode: function (mode) {
+          armRenderWait();
+          return Promise.resolve(report.switchMode(mode)).then(function () { return true; });
+        },
+
+        // Which column/measure sits in which data role (axis/legend/values)
+        // of one visual. Needs powerbi-report-authoring.min.js loaded.
+        getVisualFields: function (visualName) {
+          return report.getActivePage().then(function (page) {
+            return page.getVisuals().then(function (visuals) {
+              var v = visuals.find(function (x) { return x.name === visualName; });
+              if (!v) throw new Error("Visual not found: " + visualName);
+              if (typeof v.getDataFields !== "function" || typeof v.getCapabilities !== "function") {
+                throw new Error("powerbi-report-authoring bundle not loaded — field readback unavailable");
+              }
+              return v.getCapabilities().then(function (caps) {
+                var roles = (caps && caps.dataRoles) || [];
+                return Promise.all(
+                  roles.map(function (role) {
+                    return v.getDataFields(role.name).then(
+                      function (fields) {
+                        // Sparse SDK results serialize undefined -> null; drop them.
+                        var clean = (fields || []).filter(function (f) { return f != null; });
+                        return { role: role.name, displayName: role.displayName, fields: clean };
+                      },
+                      function () {
+                        return { role: role.name, displayName: role.displayName, fields: [] };
+                      }
+                    );
+                  })
+                ).then(function (out) {
+                  return { name: v.name, title: v.title, type: v.type, roles: out };
+                });
+              });
+            });
+          });
+        },
+
+        // Summarized/underlying data of one visual as CSV (SDK exportData).
+        exportVisualData: function (visualName, exportType, rows) {
+          return report.getActivePage().then(function (page) {
+            return page.getVisuals().then(function (visuals) {
+              var v = visuals.find(function (x) { return x.name === visualName; });
+              if (!v) throw new Error("Visual not found: " + visualName);
+              var type = exportType === "underlying"
+                ? models.ExportDataType.Underlying
+                : models.ExportDataType.Summarized;
+              return v.exportData(type, rows).then(function (result) {
+                return { data: result && result.data };
+              });
+            });
+          });
+        },
+
+        // Active filter state: report level, page level, and per visual
+        // (slicer state included for slicers). Per-visual errors -> null.
+        getFilters: function () {
+          return report.getActivePage().then(function (page) {
+            return Promise.all([
+              report.getFilters().catch(function () { return []; }),
+              page.getFilters().catch(function () { return []; }),
+              page.getVisuals().then(function (visuals) {
+                return Promise.all(
+                  visuals.map(function (v) {
+                    var filters = v.getFilters().catch(function () { return null; });
+                    var slicer = v.type === "slicer"
+                      ? v.getSlicerState().catch(function () { return undefined; })
+                      : Promise.resolve(undefined);
+                    return Promise.all([filters, slicer]).then(function (r) {
+                      var entry = { name: v.name, title: v.title, type: v.type, filters: r[0] };
+                      if (r[1] !== undefined) entry.slicerState = r[1];
+                      return entry;
+                    });
+                  })
+                );
+              }),
+            ]).then(function (r) {
+              return { report: r[0], page: r[1], visuals: r[2] };
+            });
           });
         },
       };

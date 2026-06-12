@@ -1,3 +1,4 @@
+import * as fs from "fs";
 import { chromium, Browser, Page } from "playwright-core";
 import { startEmbedHost, EmbedHost } from "./embedHost";
 
@@ -42,6 +43,34 @@ export interface VisualInfo {
   layout?: { x: number; y: number; width: number; height: number };
 }
 
+export type EmbedMode = "view" | "edit";
+
+/** One column/measure/hierarchy bound to a data role of a visual. */
+export interface FieldTarget {
+  table?: string;
+  column?: string;
+  measure?: string;
+  hierarchy?: string;
+  hierarchyLevel?: string;
+  aggregationFunction?: string;
+  [key: string]: unknown;
+}
+
+/** Field bindings of one visual: which fields sit in which data role. */
+export interface VisualFields {
+  name: string;
+  title?: string;
+  type: string;
+  roles: { role: string; displayName?: string; fields: FieldTarget[] }[];
+}
+
+/** Active filters at report/page/visual level (slicer state for slicers). */
+export interface FiltersState {
+  report: unknown[];
+  page: unknown[];
+  visuals: { name: string; title?: string; type: string; filters: unknown[] | null; slicerState?: unknown }[];
+}
+
 export interface CaptureOptions {
   /** Internal page name (ReportSectionXXXX) or display name. */
   page?: string;
@@ -67,14 +96,22 @@ const DEFAULT_RENDER_TIMEOUT = 60_000;
  * each report embed ~4-8s).
  */
 export class CaptureSession {
+  private mode: EmbedMode;
+
   private constructor(
     private browser: Browser,
     private host: EmbedHost,
     private page: Page,
-    private target: EmbedTarget
-  ) {}
+    private target: EmbedTarget,
+    mode: EmbedMode
+  ) {
+    this.mode = mode;
+  }
 
-  static async open(target: EmbedTarget, opts: { width?: number; height?: number } = {}): Promise<CaptureSession> {
+  static async open(
+    target: EmbedTarget,
+    opts: { width?: number; height?: number; mode?: EmbedMode } = {}
+  ): Promise<CaptureSession> {
     const host = await startEmbedHost();
     const { browser } = await launchBrowser();
     const page = await browser.newPage({
@@ -82,19 +119,33 @@ export class CaptureSession {
       deviceScaleFactor: 2,
     });
     await page.goto(host.url);
-    const session = new CaptureSession(browser, host, page, target);
+    const session = new CaptureSession(browser, host, page, target, opts.mode ?? "view");
     await session.embed();
     return session;
   }
 
   private async embed(pageName?: string): Promise<void> {
     await this.page.evaluate(
-      ([target, pn]) => {
-        (window as any).__pbi.init({ ...(target as object), pageName: pn, showNav: false });
+      ([target, pn, mode]) => {
+        (window as any).__pbi.init({ ...(target as object), pageName: pn, showNav: false, mode });
       },
-      [this.target as unknown, pageName as unknown] as const
+      [this.target as unknown, pageName as unknown, this.mode as unknown] as const
     );
     await this.waitForRender();
+  }
+
+  /** Switch the embed between view and edit mode (re-renders). */
+  async ensureMode(mode: EmbedMode): Promise<void> {
+    if (this.mode === mode) return;
+    await this.page.evaluate((m) => (window as any).__pbi.switchMode(m), mode);
+    await this.waitForRender();
+    this.mode = mode;
+  }
+
+  /** Swap in a fresh AAD token without re-embedding (long-lived sessions). */
+  async refreshAccessToken(token: string): Promise<void> {
+    this.target = { ...this.target, accessToken: token };
+    await this.page.evaluate((t) => (window as any).__pbi.setAccessToken(t), token);
   }
 
   private async waitForRender(timeoutMs = DEFAULT_RENDER_TIMEOUT): Promise<void> {
@@ -135,16 +186,27 @@ export class CaptureSession {
     await this.waitForRender();
   }
 
-  async setSlicer(visualNameOrTitle: string, state: unknown): Promise<void> {
+  async clearFilters(): Promise<void> {
+    await this.page.evaluate(() => (window as any).__pbi.clearFilters());
+    await this.waitForRender();
+  }
+
+  /** Find a visual on the active page by internal name or (case-insensitive) title. */
+  private async resolveVisual(nameOrTitle: string): Promise<VisualInfo> {
     const visuals = await this.getVisuals();
     const target =
-      visuals.find((v) => v.name === visualNameOrTitle) ??
-      visuals.find((v) => v.title?.toLowerCase() === visualNameOrTitle.toLowerCase());
+      visuals.find((v) => v.name === nameOrTitle) ??
+      visuals.find((v) => v.title?.toLowerCase() === nameOrTitle.toLowerCase());
     if (!target) {
       throw new Error(
-        `Slicer "${visualNameOrTitle}" not found. Visuals: ${visuals.map((v) => v.title ?? v.name).join(", ")}`
+        `Visual "${nameOrTitle}" not found. Visuals: ${visuals.map((v) => v.title ?? v.name).join(", ")}`
       );
     }
+    return target;
+  }
+
+  async setSlicer(visualNameOrTitle: string, state: unknown): Promise<void> {
+    const target = await this.resolveVisual(visualNameOrTitle);
     await this.page.evaluate(
       ([name, s]) => (window as any).__pbi.setSlicer(name, s),
       [target.name, state] as const
@@ -153,26 +215,70 @@ export class CaptureSession {
   }
 
   /**
-   * Screenshot the active page (or one visual cropped out of it) to a PNG.
+   * Field bindings of one visual (which column/measure on which role/axis).
+   * The report-authoring APIs may refuse in view mode; on failure the session
+   * flips to edit mode once and retries (screenshots flip it back).
    */
-  async screenshot(outPath: string, visualNameOrTitle?: string): Promise<void> {
+  async getVisualFields(visualNameOrTitle: string): Promise<VisualFields> {
+    const target = await this.resolveVisual(visualNameOrTitle);
+    try {
+      return (await this.page.evaluate(
+        (n) => (window as any).__pbi.getVisualFields(n),
+        target.name
+      )) as VisualFields;
+    } catch (first) {
+      if (this.mode === "edit") throw first;
+      await this.ensureMode("edit");
+      try {
+        return (await this.page.evaluate(
+          (n) => (window as any).__pbi.getVisualFields(n),
+          target.name
+        )) as VisualFields;
+      } catch (second) {
+        throw new Error(
+          `Field readback failed in view mode (${(first as Error).message}) and edit mode ` +
+            `(${(second as Error).message}). Field readback needs edit rights on the report.`
+        );
+      }
+    }
+  }
+
+  /** Data points of one visual as CSV (SDK exportData; tenant may disable export). */
+  async exportVisualData(
+    visualNameOrTitle: string,
+    opts: { exportType?: "summarized" | "underlying"; rows?: number } = {}
+  ): Promise<string> {
+    const target = await this.resolveVisual(visualNameOrTitle);
+    const result = (await this.page.evaluate(
+      ([name, type, rows]) => (window as any).__pbi.exportVisualData(name, type, rows),
+      [target.name, opts.exportType ?? "summarized", opts.rows] as const
+    )) as { data?: string };
+    if (typeof result?.data !== "string") {
+      throw new Error("exportData returned no data (export may be disabled for this report/tenant).");
+    }
+    return result.data;
+  }
+
+  /** Active filter state of the report, active page and every visual on it. */
+  async getFiltersState(): Promise<FiltersState> {
+    return (await this.page.evaluate(() => (window as any).__pbi.getFilters())) as FiltersState;
+  }
+
+  /**
+   * Screenshot the active page (or one visual cropped out of it) as a PNG buffer.
+   * Always drops back to view mode first so edit chrome never leaks into shots.
+   */
+  async screenshotBuffer(visualNameOrTitle?: string): Promise<Buffer> {
+    await this.ensureMode("view");
     // Let any in-flight animations settle.
     await this.page.waitForTimeout(300);
     const container = this.page.locator("#container iframe").first();
     if (!visualNameOrTitle) {
-      await container.screenshot({ path: outPath });
-      return;
+      return await container.screenshot();
     }
-    const visuals = await this.getVisuals();
-    const target =
-      visuals.find((v) => v.name === visualNameOrTitle) ??
-      visuals.find((v) => v.title?.toLowerCase() === visualNameOrTitle.toLowerCase());
-    if (!target?.layout) {
-      throw new Error(
-        `Visual "${visualNameOrTitle}" not found or has no layout. Visuals: ${visuals
-          .map((v) => v.title ?? v.name)
-          .join(", ")}`
-      );
+    const target = await this.resolveVisual(visualNameOrTitle);
+    if (!target.layout) {
+      throw new Error(`Visual "${visualNameOrTitle}" has no layout to crop to.`);
     }
     // Visual layout is in report-page coordinates; scale to rendered iframe size.
     const pageSize = (await this.page.evaluate(() => (window as any).__pbi.getActivePageSize())) as {
@@ -186,8 +292,7 @@ export class CaptureSession {
     const scale = Math.min(box.width / pageSize.width, box.height / pageSize.height);
     const offsetX = box.x + (box.width - pageSize.width * scale) / 2;
     const offsetY = box.y + (box.height - pageSize.height * scale) / 2;
-    await this.page.screenshot({
-      path: outPath,
+    return await this.page.screenshot({
       clip: {
         x: offsetX + target.layout.x * scale,
         y: offsetY + target.layout.y * scale,
@@ -195,6 +300,13 @@ export class CaptureSession {
         height: target.layout.height * scale,
       },
     });
+  }
+
+  /**
+   * Screenshot the active page (or one visual cropped out of it) to a PNG file.
+   */
+  async screenshot(outPath: string, visualNameOrTitle?: string): Promise<void> {
+    fs.writeFileSync(outPath, await this.screenshotBuffer(visualNameOrTitle));
   }
 
   async close(): Promise<void> {

@@ -1,14 +1,15 @@
 {
   "name": "pbi-lens-monorepo",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "workspaces": [
     "packages/core",
     "packages/cli",
-    "packages/vscode"
+    "packages/vscode",
+    "packages/mcp"
   ],
   "scripts": {
-    "build": "npm run build -w @pbi-lens/core && npm run build -w pbi-lens && npm run build -w pbi-lens-vscode",
+    "build": "npm run build -w @pbi-lens/core && npm run build -w pbi-lens && npm run build -w pbi-lens-vscode && npm run build -w @pbi-lens/mcp",
     "watch": "npm run build && npm run watch -w @pbi-lens/core",
     "package:vsix": "npm run build && node scripts/package-vsix.js"
   },
