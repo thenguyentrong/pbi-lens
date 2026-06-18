@@ -1,4 +1,7 @@
-import { PowerBiClient } from "./rest";
+import { PowerBiClient, DaxResult } from "./rest";
+
+/** A transport that runs a DAX query and returns rows — cloud or local engine. */
+export type DaxExecutor = (query: string) => Promise<DaxResult>;
 
 export interface ModelTable {
   name: string;
@@ -91,11 +94,22 @@ export async function getModelInfo(
   datasetId: string,
   opts: { includeHidden?: boolean } = {}
 ): Promise<ModelInfo> {
+  return getModelInfoWith((query) => client.executeDax(datasetId, query), opts);
+}
+
+/**
+ * Same schema read as getModelInfo, but against any DAX transport — pass a cloud
+ * executor (`q => client.executeDax(id, q)`) or a local one (`q => executeDaxLocal(port, q)`).
+ */
+export async function getModelInfoWith(
+  executor: DaxExecutor,
+  opts: { includeHidden?: boolean } = {}
+): Promise<ModelInfo> {
   const warnings: string[] = [];
 
   async function section(label: string, query: string): Promise<Record<string, unknown>[]> {
     try {
-      const result = await client.executeDax(datasetId, query);
+      const result = await executor(query);
       return cleanRows(result.rows);
     } catch (e) {
       warnings.push(`${label} unavailable: ${(e as Error).message.split("\n")[0]}`);

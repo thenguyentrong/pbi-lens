@@ -1,25 +1,31 @@
 {
   "name": "@pbi-lens/core",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Power BI auth, REST, embed host and Playwright capture engine",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
     "dist",
-    "media"
+    "media",
+    "native/adomd-runner/publish"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/copy-assets.js",
+    "build:native": "dotnet publish native/adomd-runner -c Release -o native/adomd-runner/publish",
     "watch": "tsc -p tsconfig.json --watch"
   },
   "dependencies": {
     "@azure/msal-node": "^2.16.0",
     "express": "^4.21.0",
-    "playwright-core": "^1.50.0"
+    "pixelmatch": "^5.3.0",
+    "playwright-core": "^1.50.0",
+    "pngjs": "^7.0.0"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^22.0.0",
+    "@types/pixelmatch": "^5.2.6",
+    "@types/pngjs": "^6.0.5",
     "powerbi-client": "^2.23.1",
     "powerbi-report-authoring": "^3.0.0",
     "typescript": "^5.6.0"

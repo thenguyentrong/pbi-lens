@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import "./stdio-guard";
 import * as fs from "fs";
+import * as path from "path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -9,17 +10,32 @@ import {
   buildReportContext,
   getAccessToken,
   getModelInfo,
+  getModelInfoWith,
+  executeDaxLocal,
+  resolveLocalPort,
+  findDesktopInstances,
   compactModel,
   FiltersState,
   VisualFields,
+  VisualInfo,
   ReportContext,
+  Report,
+  ReportPage,
+  resolveReportFolder,
+  buildReportDefinitionParts,
+  loadConfig,
   tuneNetworkForVpn,
 } from "@pbi-lens/core";
 import { client, resolveWorkspace, resolveTarget, SessionManager } from "./session";
 
 tuneNetworkForVpn();
 
-const server = new McpServer({ name: "pbi-lens", version: "0.2.0" });
+// Read version from package.json so the dist can never drift from source.
+const { version } = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")
+) as { version: string };
+
+const server = new McpServer({ name: "pbi-lens", version });
 const sessions = new SessionManager();
 
 // ---------- shared result/error helpers ----------
@@ -94,6 +110,44 @@ function slimContext(ctx: ReportContext): Record<string, unknown> {
   };
 }
 
+/** Reports: drop the bulky embedUrl (regenerated on demand by capture) — the byte hog. */
+function slimReports(reports: Report[]): Record<string, unknown>[] {
+  return reports.map((r) => ({
+    id: r.id,
+    name: r.name,
+    datasetId: r.datasetId,
+    ...(r.webUrl ? { webUrl: r.webUrl } : {}),
+  }));
+}
+
+/** Pages: keep order only when present. */
+function slimPages(pages: ReportPage[]): Record<string, unknown>[] {
+  return pages.map((p) => ({
+    name: p.name,
+    displayName: p.displayName,
+    ...(p.order !== undefined ? { order: p.order } : {}),
+  }));
+}
+
+/** Visuals: round layout to whole pixels (sub-pixel precision is just noise). */
+function slimVisuals(visuals: VisualInfo[]): Record<string, unknown>[] {
+  return visuals.map((v) => ({
+    name: v.name,
+    ...(v.title ? { title: v.title } : {}),
+    type: v.type,
+    ...(v.layout
+      ? {
+          layout: {
+            x: Math.round(v.layout.x),
+            y: Math.round(v.layout.y),
+            width: Math.round(v.layout.width),
+            height: Math.round(v.layout.height),
+          },
+        }
+      : {}),
+  }));
+}
+
 function hintFor(message: string): string {
   if (/AADSTS|no account|not signed in|interaction.?required|silent/i.test(message)) {
     return " Hint: sign in first — run `pbi-lens login --interactive` in a terminal (device code is blocked on some tenants).";
@@ -106,6 +160,12 @@ function hintFor(message: string): string {
   }
   if (/Field readback/i.test(message)) {
     return " Hint: field readback needs edit rights on the report. Fallback: read the visual.json in the local PBIP source.";
+  }
+  if (/connection cannot be made|msmdsrv|local engine|ADOMD sidecar|No running Power BI Desktop/i.test(message)) {
+    return " Hint: local DAX needs Power BI Desktop open with a model. Call list_local to see ports; if empty, open a .pbix/.pbip first.";
+  }
+  if (/capacity|Fabric|PowerBIEntityNotFound|sandbox/i.test(message)) {
+    return " Hint: screenshot_local needs a Fabric-capacity sandbox workspace (My Workspace is not supported) and a valid published `dataset` id — find one with `pbi-lens find` or get_model.";
   }
   return "";
 }
@@ -148,17 +208,35 @@ tool("list_workspaces", "List Power BI workspaces the signed-in user can access.
 
 tool(
   "list_reports",
-  "List reports in a workspace.",
-  { workspace: targetParams.workspace },
+  "List reports in a workspace (id, name, datasetId — embedUrl is omitted to stay token-lean). Use `name` to filter and `limit`/`offset` to page; the result flags `total`/`truncated` so a cap is never silent.",
+  {
+    workspace: targetParams.workspace,
+    name: z.string().optional().describe("Case-insensitive substring filter on report name."),
+    limit: z.number().int().positive().optional().describe("Max reports to return (default 50)."),
+    offset: z.number().int().nonnegative().optional().describe("Skip this many matches before returning (default 0)."),
+  },
   async (args) => {
     const workspace = await resolveWorkspace(args.workspace as string | undefined);
-    return ok(await client.listReports(workspace.id));
+    const all = await client.listReports(workspace.id);
+    const needle = (args.name as string | undefined)?.toLowerCase();
+    const matched = needle ? all.filter((r) => r.name.toLowerCase().includes(needle)) : all;
+    const offset = (args.offset as number | undefined) ?? 0;
+    const limit = (args.limit as number | undefined) ?? 50;
+    const page = matched.slice(offset, offset + limit);
+    return ok({
+      workspace: workspace.name,
+      total: matched.length,
+      offset,
+      count: page.length,
+      ...(offset + page.length < matched.length ? { truncated: true } : {}),
+      reports: slimReports(page),
+    });
   }
 );
 
 tool("list_pages", "List pages of a report.", targetParams, async (args) => {
   const { workspace, report } = await resolveTarget(args);
-  return ok(await client.listPages(workspace.id, report.id));
+  return ok(slimPages(await client.listPages(workspace.id, report.id)));
 });
 
 tool(
@@ -169,7 +247,7 @@ tool(
     const { workspace, report } = await resolveTarget(args);
     return await sessions.withSession(workspace, report, async (s) => {
       if (args.page) await s.setPage(args.page as string);
-      return ok(await s.getVisuals());
+      return ok(slimVisuals(await s.getVisuals()));
     });
   }
 );
@@ -203,15 +281,24 @@ tool(
 
 tool(
   "get_model",
-  "Dataset schema: tables, columns, measures and relationships (via DAX INFO.VIEW.*). Auto date/time noise is filtered out. Default output is compact; detail=full adds per-column format/sort/category metadata.",
+  "Dataset schema: tables, columns, measures and relationships (via DAX INFO.VIEW.*). Auto date/time noise is filtered out. Default output is compact; detail=full adds per-column format/sort/category metadata. Set `local` to read from a local Power BI Desktop engine instead of the cloud.",
   {
     include_hidden: z.boolean().optional().describe("Include hidden tables/columns/measures."),
     detail: z.enum(["compact", "full"]).optional().describe("compact (default, ~5x fewer tokens) or full."),
+    local: z.boolean().optional().describe("Read from a local Power BI Desktop engine (ADOMD) instead of the cloud."),
+    port: z.number().int().optional().describe("With local: explicit msmdsrv port (default: newest running Desktop instance)."),
     ...targetParams,
   },
   async (args) => {
-    const { report } = await resolveTarget(args);
-    const model = await getModelInfo(client, report.datasetId, { includeHidden: args.include_hidden === true });
+    const includeHidden = args.include_hidden === true;
+    let model;
+    if (args.local) {
+      const port = resolveLocalPort(args.port as number | undefined);
+      model = await getModelInfoWith((q) => executeDaxLocal(port, q), { includeHidden });
+    } else {
+      const { report } = await resolveTarget(args);
+      model = await getModelInfo(client, report.datasetId, { includeHidden });
+    }
     return ok(args.detail === "full" ? model : compactModel(model));
   }
 );
@@ -271,13 +358,19 @@ tool(
 
 tool(
   "run_dax",
-  "Run a DAX query against the report's dataset (executeQueries; Pro limits: 120/min, 100k rows). Use for exact numbers instead of reading pixels.",
+  "Run a DAX query (executeQueries; Pro limits: 120/min, 100k rows). Use for exact numbers instead of reading pixels. Set `local` to run against a local Power BI Desktop engine instead of the cloud — see list_local.",
   {
     query: z.string().describe('DAX query, e.g. EVALUATE SUMMARIZECOLUMNS(...)'),
     dataset: z.string().optional().describe("Dataset id (default: the target report's dataset)."),
+    local: z.boolean().optional().describe("Run against a local Power BI Desktop engine (ADOMD) instead of the cloud."),
+    port: z.number().int().optional().describe("With local: explicit msmdsrv port (default: newest running Desktop instance)."),
     ...targetParams,
   },
   async (args) => {
+    if (args.local) {
+      const port = resolveLocalPort(args.port as number | undefined);
+      return ok(await executeDaxLocal(port, args.query as string));
+    }
     let datasetId = args.dataset as string | undefined;
     if (!datasetId) {
       const { report } = await resolveTarget(args);
@@ -286,6 +379,13 @@ tool(
     const result = await client.executeDax(datasetId, args.query as string);
     return ok(result);
   }
+);
+
+tool(
+  "list_local",
+  "List running Power BI Desktop local engines (msmdsrv ports) usable by run_dax/get_model with local=true.",
+  {},
+  async () => ok(findDesktopInstances())
 );
 
 // ---------- seeing the report ----------
@@ -339,6 +439,65 @@ tool(
         visual: args.visual,
       });
     });
+  }
+);
+
+tool(
+  "screenshot_local",
+  "Screenshot a LOCAL .pbip / *.Report branch: publishes a throwaway thin report (auto-deleted after) and renders it. Needs `dataset` (a published semantic model that supplies the data) and a Fabric-capacity `sandbox_ws`. NOTE: not a pure-offline render — it round-trips through a sandbox workspace. ~5-10 s.",
+  {
+    local_path: z.string().describe("Path to a local .pbip file or *.Report folder."),
+    dataset: z.string().describe("Published semantic model (dataset) id that supplies the data."),
+    sandbox_ws: z
+      .string()
+      .optional()
+      .describe("Fabric-capacity workspace for the throwaway report. Default: saved sandbox workspace."),
+    page: pageParam,
+    visual: z.string().optional().describe("Crop to a single visual (name or title)."),
+    filters: z
+      .array(z.record(z.string(), z.unknown()))
+      .optional()
+      .describe("powerbi-client filter array applied before capture."),
+    width: z.number().int().optional().describe("Viewport width (default 1600)."),
+    height: z.number().int().optional().describe("Viewport height (default 900)."),
+  },
+  async (args) => {
+    const localPath = args.local_path as string;
+    if (!fs.existsSync(localPath)) throw new Error(`Local path not found: ${localPath}`);
+    const wsArg = (args.sandbox_ws as string | undefined) ?? loadConfig().sandboxWorkspace;
+    if (!wsArg) {
+      throw new Error(
+        'No sandbox workspace. Pass `sandbox_ws`, or save one with `pbi-lens use --sandbox-ws "<name>"`. Must be a Fabric-capacity workspace (My Workspace is not supported).'
+      );
+    }
+    const folder = resolveReportFolder(localPath);
+    const ws = await client.resolveWorkspace(wsArg);
+    const parts = buildReportDefinitionParts(folder, args.dataset as string);
+    const name = `_pbilens_sandbox_${path.basename(folder).replace(/\.Report$/i, "")}`;
+    // Disposable report → its own one-off CaptureSession, never the warm pool.
+    const reportId = await client.createReport(ws.id, name, parts);
+    let session: CaptureSession | undefined;
+    try {
+      const rep = await client.getReport(ws.id, reportId);
+      session = await CaptureSession.open(
+        { accessToken: await getAccessToken(), embedUrl: rep.embedUrl, reportId },
+        { width: (args.width as number) ?? 1600, height: (args.height as number) ?? 900 }
+      );
+      if (args.filters) await session.setFilters(args.filters as unknown[]);
+      if (args.page) await session.setPage(args.page as string);
+      const buf = await session.screenshotBuffer(args.visual as string | undefined);
+      return png(buf, {
+        source: "local",
+        local: localPath,
+        sandbox: ws.name,
+        page: (args.page as string) ?? "(active)",
+        ...(args.visual ? { visual: args.visual } : {}),
+      });
+    } finally {
+      // Always remove the throwaway, even if capture failed.
+      await session?.close();
+      await client.deleteReport(ws.id, reportId).catch(() => {});
+    }
   }
 );
 

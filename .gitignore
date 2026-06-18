@@ -10,3 +10,8 @@ out/
 .DS_Store
 sample.pbix
 token.txt
+
+# .NET build intermediates (the runnable sidecar in native/**/publish IS committed)
+packages/core/native/**/bin/
+packages/core/native/**/obj/
+*.pdb

@@ -23,3 +23,5 @@ export * from "./doctor";
 export * from "./model";
 export * from "./context";
 export * from "./sandbox";
+export * from "./imagediff";
+export * from "./local-engine";

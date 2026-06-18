@@ -73,11 +73,19 @@ pbi-lens model                               # tables, columns, measures, relati
 pbi-lens fields -p "Overview"                # which column/measure is on which axis/role, per visual
 pbi-lens data --visual "Revenue by Month"    # a visual's data points as CSV
 pbi-lens filters -p "Overview"               # active filter + slicer state
+
+# Local Power BI Desktop engine (no cloud round-trip) — needs Desktop open
+pbi-lens local                               # list running Desktop instances (msmdsrv ports)
+pbi-lens dax --local "EVALUATE INFO.VIEW.TABLES()"
+pbi-lens model --local                       # schema straight from the local engine
+
+# Visual diff of a report across two git refs (before/after + pixel-diff PNGs)
+pbi-lens review --base main --branch my-feature --dataset <id> --sandbox-ws "<Test ws>"
 ```
 
 ## Give your AI the plug (MCP)
 
-`packages/mcp` is an MCP server with 16 tools (`get_report_context`, `get_visual_fields`, `get_model`, `run_dax`, `get_visual_data`, `get_filters`, `screenshot_page`, `set_filters`, `publish_pbix`, `refresh_report`, ...). Screenshots come back as real images the AI can see; all JSON outputs are token-lean (compact, noise-free — the model schema alone is ~84% smaller than the raw API shape). Publishing auto-reloads the warm render session, so post-edit screenshots are never stale. It works in every MCP-capable agent:
+`packages/mcp` is an MCP server with 18 tools (`get_report_context`, `get_visual_fields`, `get_model`, `run_dax`, `get_visual_data`, `get_filters`, `screenshot_page`, `screenshot_visual`, `screenshot_local`, `set_filters`, `set_slicer`, `publish_pbix`, `refresh_report`, `list_workspaces`/`list_reports`/`list_pages`/`list_visuals`, `list_local`). Screenshots come back as real images the AI can see; all JSON outputs are token-lean (compact, noise-free — the model schema alone is ~84% smaller than the raw API shape, and `list_reports` drops embed URLs + supports `name`/`limit`/`offset`). `run_dax` and `get_model` can target a **local Power BI Desktop engine** (`local: true`) as well as the cloud; `list_local` finds running Desktop instances. Publishing auto-reloads the warm render session, so post-edit screenshots are never stale. It works in every MCP-capable agent:
 
 - **Claude Code:** `claude mcp add --scope user pbi-lens -- node <repo>/packages/mcp/dist/index.js` (already registered on this machine; the repo also has a project-scope `.mcp.json`).
 - **GitHub Copilot Chat (VS Code):** `.vscode/mcp.json` in this repo, or user-wide in `%APPDATA%\Code\User\mcp.json` (already set up on this machine). Enable agent mode to see the tools.

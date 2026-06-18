@@ -2,6 +2,8 @@
 import { Command } from "commander";
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
+import { execFileSync } from "child_process";
 import {
   login,
   loginInteractive,
@@ -14,22 +16,33 @@ import {
   CaptureSession,
   runDoctor,
   getModelInfo,
+  getModelInfoWith,
+  executeDaxLocal,
+  resolveLocalPort,
+  findDesktopInstances,
   buildReportContext,
   Report,
+  Workspace,
   ModelInfo,
   VisualFields,
   tuneNetworkForVpn,
   resolveReportFolder,
   buildReportDefinitionParts,
+  diffPng,
 } from "@pbi-lens/core";
 
 tuneNetworkForVpn();
+
+// Read version from package.json so the dist can never drift from source.
+const { version } = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")
+) as { version: string };
 
 const program = new Command();
 program
   .name("pbi-lens")
   .description("Screenshot, query and publish Power BI reports — built for AI agent loops")
-  .version("0.2.0");
+  .version(version);
 
 function fail(err: unknown): never {
   console.error(err instanceof Error ? err.message : String(err));
@@ -293,21 +306,30 @@ program
 
 program
   .command("dax <query>")
-  .description("Run a DAX query against the report's dataset (executeQueries REST API)")
+  .description("Run a DAX query against the report's dataset (cloud executeQueries, or a local Power BI Desktop engine via --local)")
   .option("-w, --workspace <idOrName>")
   .option("-r, --report <idOrName>", "resolve dataset from this report")
   .option("-d, --dataset <id>", "dataset id (overrides --report)")
+  .option("--local", "run against a local Power BI Desktop engine (ADOMD) instead of the cloud")
+  .option("--port <port>", "with --local: explicit msmdsrv port (default: newest running instance)")
   .option("--json", "output raw JSON rows")
   .action(async (query, opts) => {
     try {
-      const client = new PowerBiClient();
-      let datasetId = opts.dataset as string | undefined;
-      if (!datasetId) {
-        const { report } = await resolveTarget(client, opts);
-        if (!report) fail("Need -d <datasetId> or -w/-r to resolve a dataset.");
-        datasetId = report!.datasetId;
+      let result;
+      if (opts.local) {
+        const port = resolveLocalPort(opts.port ? parseInt(opts.port, 10) : undefined);
+        console.error(`Local engine on port ${port}`);
+        result = await executeDaxLocal(port, query);
+      } else {
+        const client = new PowerBiClient();
+        let datasetId = opts.dataset as string | undefined;
+        if (!datasetId) {
+          const { report } = await resolveTarget(client, opts);
+          if (!report) fail("Need -d <datasetId>, -w/-r, or --local.");
+          datasetId = report!.datasetId;
+        }
+        result = await client.executeDax(datasetId!, query);
       }
-      const result = await client.executeDax(datasetId!, query);
       if (opts.json) return console.log(JSON.stringify(result.rows, null, 2));
       if (result.rows.length === 0) return console.log("(no rows)");
       const cols = Object.keys(result.rows[0]);
@@ -366,22 +388,32 @@ function printFields(f: VisualFields): void {
 
 program
   .command("model")
-  .description("Dataset schema: tables, columns, measures, relationships (DAX INFO.VIEW.*)")
+  .description("Dataset schema: tables, columns, measures, relationships (DAX INFO.VIEW.*; cloud or local Desktop via --local)")
   .option("-w, --workspace <idOrName>")
   .option("-r, --report <idOrName>")
   .option("-d, --dataset <id>", "dataset id (overrides --report)")
+  .option("--local", "read from a local Power BI Desktop engine (ADOMD) instead of the cloud")
+  .option("--port <port>", "with --local: explicit msmdsrv port (default: newest running instance)")
   .option("--include-hidden", "include hidden tables/columns/measures")
   .option("--json", "output JSON")
   .action(async (opts) => {
     try {
-      const client = new PowerBiClient();
-      let datasetId = opts.dataset as string | undefined;
-      if (!datasetId) {
-        const { report } = await resolveTarget(client, opts);
-        if (!report) fail("Need -d <datasetId> or -w/-r to resolve a dataset.");
-        datasetId = report!.datasetId;
+      const includeHidden = opts.includeHidden === true;
+      let model;
+      if (opts.local) {
+        const port = resolveLocalPort(opts.port ? parseInt(opts.port, 10) : undefined);
+        console.error(`Local engine on port ${port}`);
+        model = await getModelInfoWith((q) => executeDaxLocal(port, q), { includeHidden });
+      } else {
+        const client = new PowerBiClient();
+        let datasetId = opts.dataset as string | undefined;
+        if (!datasetId) {
+          const { report } = await resolveTarget(client, opts);
+          if (!report) fail("Need -d <datasetId>, -w/-r, or --local.");
+          datasetId = report!.datasetId;
+        }
+        model = await getModelInfo(client, datasetId!, { includeHidden });
       }
-      const model = await getModelInfo(client, datasetId!, { includeHidden: opts.includeHidden === true });
       if (opts.json) return console.log(JSON.stringify(model, null, 2));
       printModel(model);
     } catch (e) {
@@ -555,6 +587,158 @@ program
       console.log(`Import started (${imp.id}), waiting...`);
       await client.waitForImport(workspace.id, imp.id);
       console.log("Published.");
+    } catch (e) {
+      fail(e);
+    }
+  });
+
+program
+  .command("local")
+  .description("List running Power BI Desktop local engines (msmdsrv ports) usable with `dax --local` / `model --local`")
+  .option("--json", "output JSON")
+  .action((opts) => {
+    const instances = findDesktopInstances();
+    if (opts.json) return console.log(JSON.stringify(instances, null, 2));
+    if (instances.length === 0) {
+      return console.log("No running Power BI Desktop instance found. Open a .pbix/.pbip in Desktop first.");
+    }
+    console.log(`Running local engine(s) (newest first):`);
+    for (const i of instances) console.log(`  port ${i.port}  (workspace ${i.workspace})`);
+  });
+
+function sanitize(s: string): string {
+  return s.replace(/[^\w.-]+/g, "_");
+}
+
+function isGitRepo(repo: string): boolean {
+  try {
+    execFileSync("git", ["-C", repo, "rev-parse", "--is-inside-work-tree"], { stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function autodetectPbip(dir: string): string {
+  const hits = fs.readdirSync(dir).filter((f) => f.toLowerCase().endsWith(".pbip"));
+  if (hits.length === 1) return path.join(dir, hits[0]);
+  if (hits.length === 0) fail("No .pbip at this ref's repo root. Pass --pbip <relPath>.");
+  return fail(`Multiple .pbip found (${hits.join(", ")}). Pass --pbip <relPath>.`);
+}
+
+/**
+ * Materialize a git ref in a throwaway worktree, publish its .pbip as a thin
+ * report to the sandbox, screenshot the requested pages, then clean both up.
+ * Returns displayName -> PNG path.
+ */
+async function captureRef(
+  client: PowerBiClient,
+  ws: Workspace,
+  repo: string,
+  ref: string,
+  opts: { pbip?: string; dataset: string; width: string; height: string },
+  pageFilter: string[] | undefined,
+  outSub: string
+): Promise<Record<string, string>> {
+  const wt = fs.mkdtempSync(path.join(os.tmpdir(), "pbilens-wt-"));
+  let reportId: string | undefined;
+  let session: CaptureSession | undefined;
+  const result: Record<string, string> = {};
+  try {
+    execFileSync("git", ["-C", repo, "worktree", "add", "--detach", wt, ref], { stdio: "pipe" });
+    const local = opts.pbip ? path.join(wt, opts.pbip) : autodetectPbip(wt);
+    const folder = resolveReportFolder(local);
+    const parts = buildReportDefinitionParts(folder, opts.dataset);
+    const name = `_pbilens_review_${sanitize(ref)}_${path.basename(folder).replace(/\.Report$/i, "")}`;
+    console.error(`[${ref}] publishing throwaway "${name}" to ${ws.name}...`);
+    reportId = await client.createReport(ws.id, name, parts);
+    const rep = await client.getReport(ws.id, reportId);
+    session = await CaptureSession.open(
+      { accessToken: await getAccessToken(), embedUrl: rep.embedUrl, reportId },
+      { width: parseInt(opts.width, 10), height: parseInt(opts.height, 10) }
+    );
+    fs.mkdirSync(outSub, { recursive: true });
+    const allPages = await session.getPages();
+    const pages = pageFilter
+      ? allPages.filter((p) => pageFilter.includes(p.displayName) || pageFilter.includes(p.name))
+      : allPages;
+    if (pageFilter && pages.length === 0)
+      fail(`[${ref}] no page matched --pages. Available: ${allPages.map((p) => p.displayName).join(", ")}`);
+    for (const p of pages) {
+      await session.setPage(p.name);
+      const file = path.join(outSub, `${sanitize(p.displayName)}.png`);
+      await session.screenshot(file);
+      result[p.displayName] = file;
+      console.error(`[${ref}] ${p.displayName} -> ${file}`);
+    }
+  } finally {
+    await session?.close();
+    if (reportId)
+      await client
+        .deleteReport(ws.id, reportId)
+        .catch((e) => console.error(`[${ref}] WARN: failed to delete sandbox report ${reportId}: ${(e as Error).message}`));
+    try {
+      execFileSync("git", ["-C", repo, "worktree", "remove", "--force", wt], { stdio: "pipe" });
+    } catch {
+      fs.rmSync(wt, { recursive: true, force: true });
+    }
+  }
+  return result;
+}
+
+program
+  .command("review")
+  .description("Visual diff of a report across two git refs: render the SAME pages on each, then emit before/after + pixel-diff PNGs")
+  .requiredOption("--base <ref>", "git ref for the baseline (e.g. main)")
+  .requiredOption("--branch <ref>", "git ref for the changed version (e.g. a feature branch)")
+  .requiredOption("--dataset <id>", "published semantic model (dataset) id that supplies the data")
+  .option("--repo <path>", "git repo containing the .pbip (default: current dir)", ".")
+  .option("--pbip <relPath>", "path to the .pbip / *.Report within the repo (default: auto-detect a single .pbip)")
+  .option("--sandbox-ws <idOrName>", "Fabric-capacity workspace for throwaway renders (default: saved sandbox-ws)")
+  .option("--pages <list>", "comma-separated page display names to compare (default: all pages)")
+  .option("--width <px>", "viewport width", "1600")
+  .option("--height <px>", "viewport height", "900")
+  .option("-o, --out <dir>", "output directory", "pbi-review")
+  .action(async (opts) => {
+    const repo = path.resolve(opts.repo);
+    const wsArg = opts.sandboxWs ?? loadConfig().sandboxWorkspace;
+    if (!wsArg)
+      fail('No sandbox workspace. Pass --sandbox-ws <idOrName> or save one: `pbi-lens use --sandbox-ws "<name>"`. Must be Fabric-capacity.');
+    if (!isGitRepo(repo)) fail(`Not a git repository: ${repo}. Pass --repo <path>.`);
+    try {
+      const client = new PowerBiClient();
+      const ws = await client.resolveWorkspace(wsArg!);
+      const pageFilter: string[] | undefined = opts.pages
+        ? String(opts.pages).split(",").map((s: string) => s.trim()).filter(Boolean)
+        : undefined;
+      const outDir = path.resolve(opts.out);
+
+      const base = await captureRef(client, ws, repo, opts.base, opts, pageFilter, path.join(outDir, sanitize(opts.base)));
+      const branch = await captureRef(client, ws, repo, opts.branch, opts, pageFilter, path.join(outDir, sanitize(opts.branch)));
+
+      const diffDir = path.join(outDir, "diff");
+      fs.mkdirSync(diffDir, { recursive: true });
+      const pages = [...new Set([...Object.keys(base), ...Object.keys(branch)])].sort();
+      const summary: Record<string, unknown>[] = [];
+      for (const pg of pages) {
+        const a = base[pg];
+        const b = branch[pg];
+        if (!a || !b) {
+          summary.push({ page: pg, status: a ? "only in base" : "only in branch" });
+          continue;
+        }
+        const out = path.join(diffDir, `${sanitize(pg)}.png`);
+        const d = diffPng(a, b, out);
+        summary.push({ page: pg, changedPixels: d.changedPixels, pctChanged: +(d.fraction * 100).toFixed(2), diff: out });
+      }
+      fs.writeFileSync(path.join(outDir, "summary.json"), JSON.stringify(summary, null, 2));
+
+      console.log(`\nVisual diff: ${opts.base} -> ${opts.branch}`);
+      for (const s of summary) {
+        if (s.status) console.log(`  ${s.page}: ${s.status}`);
+        else console.log(`  ${s.page}: ${s.pctChanged}% changed (${s.changedPixels}px)  ->  ${s.diff}`);
+      }
+      console.log(`\nOutput: ${outDir}`);
     } catch (e) {
       fail(e);
     }
