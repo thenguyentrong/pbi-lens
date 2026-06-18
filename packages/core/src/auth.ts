@@ -23,6 +23,8 @@ export interface AuthConfig {
 export interface StoredConfig extends AuthConfig {
   defaultWorkspace?: string;
   defaultReport?: string;
+  /** Capacity workspace used for throwaway reports by `shot --local`. */
+  sandboxWorkspace?: string;
 }
 
 const CONFIG_DIR = path.join(os.homedir(), ".pbi-lens");

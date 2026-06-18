@@ -19,6 +19,8 @@ import {
   ModelInfo,
   VisualFields,
   tuneNetworkForVpn,
+  resolveReportFolder,
+  buildReportDefinitionParts,
 } from "@pbi-lens/core";
 
 tuneNetworkForVpn();
@@ -108,12 +110,14 @@ program
   .description("Save a default workspace/report so other commands can omit -w/-r")
   .option("-w, --workspace <idOrName>")
   .option("-r, --report <idOrName>")
+  .option("--sandbox-ws <idOrName>", "capacity workspace `shot --local` publishes throwaway reports into")
   .action((opts) => {
     const cfg = loadConfig();
     saveConfig({
       ...cfg,
       defaultWorkspace: opts.workspace ?? cfg.defaultWorkspace,
       defaultReport: opts.report ?? cfg.defaultReport,
+      sandboxWorkspace: opts.sandboxWs ?? cfg.sandboxWorkspace,
     });
     console.log("Defaults saved:", JSON.stringify(loadConfig(), null, 2));
   });
@@ -122,13 +126,16 @@ program
   .command("ls")
   .description("List workspaces, or reports/pages/visuals of a target")
   .option("-w, --workspace <idOrName>")
+  .option("-W, --workspaces", "list ALL workspaces (ignores the saved default)")
   .option("-r, --report <idOrName>")
   .option("-p, --page <nameOrDisplayName>", "list visuals of this page (needs a report)")
   .option("--json", "output JSON")
   .action(async (opts) => {
     try {
       const client = new PowerBiClient();
-      if (!opts.workspace && !loadConfig().defaultWorkspace) {
+      // -W always enumerates workspaces; otherwise we only fall back to a
+      // workspace listing when there's no target AND no saved default.
+      if (opts.workspaces || (!opts.workspace && !loadConfig().defaultWorkspace)) {
         const workspaces = await client.listWorkspaces();
         if (opts.json) return console.log(JSON.stringify(workspaces, null, 2));
         for (const w of workspaces) console.log(`${w.id}  ${w.name}`);
@@ -170,10 +177,32 @@ program
   });
 
 program
+  .command("find <query>")
+  .description("Search reports by name across ALL workspaces (case-insensitive substring)")
+  .option("--json", "output JSON")
+  .action(async (query, opts) => {
+    try {
+      const client = new PowerBiClient();
+      const hits = await client.findReports(query);
+      if (opts.json) return console.log(JSON.stringify(hits, null, 2));
+      if (hits.length === 0) return console.log(`No reports matching "${query}".`);
+      for (const { workspace, report } of hits) {
+        console.log(`${workspace.name}\t${report.name}\t(report ${report.id}, dataset ${report.datasetId})`);
+      }
+      console.log(`\n${hits.length} match(es)`);
+    } catch (e) {
+      fail(e);
+    }
+  });
+
+program
   .command("shot")
-  .description("Screenshot a report page (or one visual) to PNG")
+  .description("Screenshot a report page (or one visual) to PNG — a published report, or a LOCAL .pbip via --local")
   .option("-w, --workspace <idOrName>")
   .option("-r, --report <idOrName>")
+  .option("--local <path>", "screenshot a LOCAL .pbip / *.Report by publishing a throwaway thin report (needs --dataset)")
+  .option("--dataset <id>", "with --local: published semantic model (dataset) id that supplies the data")
+  .option("--sandbox-ws <idOrName>", "with --local: capacity workspace for the throwaway report (default: saved sandbox-ws)")
   .option("-p, --page <nameOrDisplayName>", "page to capture (default: active page)")
   .option("--all-pages", "capture every page (output becomes a directory)")
   .option("--visual <nameOrTitle>", "crop to a single visual")
@@ -184,13 +213,46 @@ program
   .option("-o, --out <path>", "output PNG path (or directory with --all-pages)", "report.png")
   .action(async (opts) => {
     let session: CaptureSession | undefined;
+    let cleanup: (() => Promise<void>) | undefined;
+    let caught: unknown;
     try {
       const client = new PowerBiClient();
-      const { report } = await resolveTarget(client, opts);
-      if (!report) fail("No report given. Use -r <idOrName> or `pbi-lens use -r <name>`.");
+
+      // Resolve a capture target: either a throwaway from a local .pbip, or a
+      // published report. Both yield an embedUrl + reportId for the session.
+      let embedUrl: string;
+      let reportId: string;
+      if (opts.local) {
+        if (!opts.dataset)
+          fail("--local needs --dataset <id> (the published semantic model that supplies the data). Find it with `pbi-lens find` or `pbi-lens model --json`.");
+        const wsArg = opts.sandboxWs ?? loadConfig().sandboxWorkspace;
+        if (!wsArg)
+          fail('No sandbox workspace. Pass --sandbox-ws <idOrName> or save one: `pbi-lens use --sandbox-ws "<Test workspace>"`. Must be a Fabric-capacity workspace (My Workspace is not supported).');
+        const folder = resolveReportFolder(opts.local);
+        const ws = await client.resolveWorkspace(wsArg!);
+        const parts = buildReportDefinitionParts(folder, opts.dataset);
+        const name = `_pbilens_sandbox_${path.basename(folder).replace(/\.Report$/i, "")}`;
+        console.error(`Publishing throwaway report "${name}" to ${ws.name} (${parts.length} parts)...`);
+        reportId = await client.createReport(ws.id, name, parts);
+        // Always remove the throwaway, even if capture fails.
+        cleanup = async () => {
+          await client.deleteReport(ws.id, reportId).then(
+            () => console.error(`Cleaned up sandbox report ${reportId}.`),
+            (e) => console.error(`WARNING: failed to delete sandbox report ${reportId} in ${ws.name}: ${(e as Error).message}`)
+          );
+        };
+        const rep = await client.getReport(ws.id, reportId);
+        embedUrl = rep.embedUrl;
+      } else {
+        const { report } = await resolveTarget(client, opts);
+        if (!report) fail("No report given. Use -r <idOrName>, `pbi-lens use -r <name>`, or --local <path>.");
+        embedUrl = report!.embedUrl;
+        reportId = report!.id;
+      }
+
       const token = await getAccessToken();
       session = await CaptureSession.open(
-        { accessToken: token, embedUrl: report!.embedUrl, reportId: report!.id },
+        { accessToken: token, embedUrl, reportId },
         { width: parseInt(opts.width, 10), height: parseInt(opts.height, 10) }
       );
 
@@ -219,10 +281,14 @@ program
         console.log(path.resolve(opts.out));
       }
     } catch (e) {
-      fail(e);
+      // Don't fail() here: process.exit would skip the finally block and leak
+      // the throwaway report. Record it and exit only after cleanup runs.
+      caught = e;
     } finally {
       await session?.close();
+      if (cleanup) await cleanup();
     }
+    if (caught) fail(caught);
   });
 
 program

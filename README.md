@@ -51,7 +51,9 @@ Auth uses the Azure CLI well-known client id by default (pre-consented in most t
 
 ```bash
 pbi-lens doctor                              # preflight: browser, assets, offline capture test, sign-in state
-pbi-lens ls                                  # workspaces
+pbi-lens ls                                  # workspaces (or reports of the saved default workspace)
+pbi-lens ls -W                               # ALL workspaces, always (ignores the saved default)
+pbi-lens find "Quartalsbericht"              # find a report by name across every workspace
 pbi-lens ls -w "My Workspace"                # reports
 pbi-lens ls -w "My Workspace" -r "Sales"     # pages
 pbi-lens ls -w "My Workspace" -r "Sales" -p "Overview"   # visuals

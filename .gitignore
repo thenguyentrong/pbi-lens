@@ -9,3 +9,4 @@ out/
 *.tsbuildinfo
 .DS_Store
 sample.pbix
+token.txt

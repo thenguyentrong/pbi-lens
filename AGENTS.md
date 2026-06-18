@@ -35,7 +35,7 @@ Report source lives as a `.pbip` project: `definition/pages/<page>/visuals/<visu
 
 ## CLI fallback (when MCP isn't connected)
 
-`node C:\pbi-lens\packages\cli\dist\index.js <cmd>` (or `pbi-lens` if linked):
+`pbi-lens <cmd>` (global shim, installed via `npm link` in `packages/cli`; falls back to `node C:\pbi-lens\packages\cli\dist\index.js <cmd>`):
 
 | Need | Command |
 |---|---|
@@ -47,6 +47,8 @@ Report source lives as a `.pbip` project: `definition/pages/<page>/visuals/<visu
 | Exact numbers | `dax "EVALUATE …"` |
 | Screenshots | `shot -p "<page>" [-o x.png] [--all-pages] [--visual t] [--filter json] [--slicer json]` |
 | Discover | `ls [-w X] [-r Y] [-p Z]` |
+| List ALL workspaces (ignores saved default) | `ls -W` |
+| Find a report by name across ALL workspaces | `find "<name substring>"` |
 | Publish | `publish out.pbix -w <ws>` |
 
 ## Known limitations (this tenant) and fallbacks

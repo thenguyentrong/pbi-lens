@@ -3,6 +3,9 @@ import * as fs from "fs";
 import * as path from "path";
 
 const API = "https://api.powerbi.com/v1.0/myorg";
+// The Fabric REST API. The Power BI delegated token (analysis.windows.net
+// audience) is accepted here too, so no extra scope/sign-in is needed.
+const FABRIC_API = "https://api.fabric.microsoft.com/v1";
 
 export interface Workspace {
   id: string;
@@ -40,6 +43,13 @@ export interface DaxResult {
   rows: Record<string, unknown>[];
 }
 
+/** One file of a Fabric item definition, base64-encoded. */
+export interface DefinitionPart {
+  path: string;
+  payload: string;
+  payloadType: "InlineBase64";
+}
+
 async function api<T>(token: string, pathName: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API}${pathName}`, {
     ...init,
@@ -65,10 +75,41 @@ export class PowerBiClient {
 
   async listWorkspaces(): Promise<Workspace[]> {
     const token = await this.token();
-    const data = await api<{ value: Workspace[] }>(token, "/groups");
+    // Page through /groups: the API caps each page (default 100), so a tenant
+    // with many workspaces would otherwise be silently truncated.
+    const groups: Workspace[] = [];
+    const pageSize = 5000;
+    for (let skip = 0; ; skip += pageSize) {
+      const data = await api<{ value: Workspace[] }>(token, `/groups?$top=${pageSize}&$skip=${skip}`);
+      groups.push(...data.value);
+      if (data.value.length < pageSize) break;
+    }
     // My Workspace is not a group; surface it explicitly so free-license
     // accounts (which have no groups at all) see their one usable target.
-    return [MY_WORKSPACE, ...data.value];
+    return [MY_WORKSPACE, ...groups];
+  }
+
+  /**
+   * Find reports whose name contains `query` (case-insensitive) across every
+   * workspace the account can see. Workspaces that error (e.g. no access to
+   * their reports) are skipped rather than failing the whole search.
+   */
+  async findReports(query: string): Promise<{ workspace: Workspace; report: Report }[]> {
+    const workspaces = await this.listWorkspaces();
+    const needle = query.toLowerCase();
+    const perWorkspace = await Promise.all(
+      workspaces.map(async (workspace) => {
+        try {
+          const reports = await this.listReports(workspace.id);
+          return reports
+            .filter((r) => r.name.toLowerCase().includes(needle))
+            .map((report) => ({ workspace, report }));
+        } catch {
+          return [];
+        }
+      })
+    );
+    return perWorkspace.flat();
   }
 
   async listReports(workspaceId: string): Promise<Report[]> {
@@ -171,6 +212,67 @@ export class PowerBiClient {
       if (imp.importState === "Failed") throw new Error("Import failed (importState=Failed).");
       if (Date.now() - start > timeoutMs) throw new Error("Import timed out.");
       await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+
+  /**
+   * Create a Report item from a PBIR definition via the Fabric REST API.
+   * The workspace must be on Fabric/Premium capacity (My Workspace is not
+   * supported). Handles both the immediate (201) and long-running (202) paths.
+   * Returns the new report's id.
+   */
+  async createReport(workspaceId: string, displayName: string, parts: DefinitionPart[]): Promise<string> {
+    const token = await this.token();
+    const res = await fetch(`${FABRIC_API}/workspaces/${workspaceId}/reports`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ displayName, definition: { parts } }),
+    });
+    if (res.status === 201) {
+      const body = (await res.json()) as { id: string };
+      return body.id;
+    }
+    if (res.status === 202) {
+      const opUrl = res.headers.get("Location");
+      if (!opUrl) throw new Error("Fabric accepted the report (202) but returned no operation Location header.");
+      return this.waitForFabricItem(opUrl);
+    }
+    const body = await res.text().catch(() => "");
+    throw new Error(`Fabric create report failed: ${res.status} ${res.statusText}\n${body}`);
+  }
+
+  /** Poll a Fabric long-running operation until it finishes, then return the created item id. */
+  private async waitForFabricItem(operationUrl: string, timeoutMs = 120_000): Promise<string> {
+    const start = Date.now();
+    for (;;) {
+      const token = await this.token();
+      const res = await fetch(operationUrl, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        throw new Error(`Fabric operation poll failed: ${res.status} ${res.statusText}\n${body}`);
+      }
+      const op = (await res.json()) as { status: string; error?: unknown };
+      if (op.status === "Succeeded") {
+        const result = await fetch(`${operationUrl}/result`, { headers: { Authorization: `Bearer ${token}` } });
+        const item = (await result.json()) as { id: string };
+        return item.id;
+      }
+      if (op.status === "Failed") throw new Error(`Fabric create operation failed: ${JSON.stringify(op.error ?? op)}`);
+      if (Date.now() - start > timeoutMs) throw new Error("Fabric create operation timed out.");
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+
+  /** Delete a report (Power BI REST). 404 is treated as already-gone. */
+  async deleteReport(workspaceId: string, reportId: string): Promise<void> {
+    const token = await this.token();
+    const res = await fetch(`${API}${groupPath(workspaceId)}/reports/${reportId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok && res.status !== 404) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`Delete report failed: ${res.status} ${res.statusText}\n${body}`);
     }
   }
 }

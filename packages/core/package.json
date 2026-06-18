@@ -1,6 +1,6 @@
 {
   "name": "@pbi-lens/core",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Power BI auth, REST, embed host and Playwright capture engine",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
