@@ -111,7 +111,7 @@ async function cmdLogin(): Promise<void> {
     let account;
     try {
       // Browser auth-code flow first — device code is blocked by Conditional
-      // Access on some tenants (e.g. dreso.com).
+      // Access on some tenants.
       account = await loginInteractive({});
     } catch {
       account = await login({}, async (message) => {
